@@ -9,7 +9,8 @@ GitLab Inc.
 
 ## What it does
 
-- **Focused window: no reloads.** The board only refreshes once you click into another window or app.
+- **Focused window: no reloads.** The board only refreshes once you click into another window or app. Opening the
+  extension's popup or clicking the address bar doesn't count as leaving the window.
 - **Unfocused: reloads every interval** (30 seconds by default). If the board hasn't been reloaded for longer
   than the interval, it reloads as soon as you click away; otherwise it waits out the rest of the interval.
 - **Never interrupts editing.** A reload is skipped while the issue sidebar is open, a text field has unsaved
@@ -64,6 +65,12 @@ every GitLab origin is an optional permission you grant from the options page.
 | `storage` | Settings (`chrome.storage.sync`) and per-tab pause state (`chrome.storage.session`) |
 | `scripting` | Registers the content script only on the origins you granted |
 | Optional `https://*/*`, `http://*/*` | Lets you grant your own GitLab origin; requested per origin, on click |
+
+## Known limitations
+
+- Focus comes from both the page (DOM focus) and Chrome's focused-window tracking. On Linux under Wayland, how Chrome
+  reports window focus depends on the compositor, so check by hand that the board stays idle while focused and
+  starts refreshing once you switch to another app.
 
 ## Development
 

@@ -78,8 +78,14 @@ export interface SchedulerState {
    */
   phase: "starting" | "running" | "reloading";
   settings: SchedulerSettings;
-  /** Whether the board's window has focus. */
+  /** Whether the page has DOM focus (`window` focus/blur). */
   focused: boolean;
+  /**
+   * Whether the tab's browser window is the focused Chrome window. The page
+   * also loses DOM focus to the toolbar popup or the omnibox while its window
+   * keeps focus, so the tab counts as unfocused only when both are false.
+   */
+  windowFocused: boolean;
   /** The page loaded in the tab is the sign-in page: the session has expired. */
   signedOut: boolean;
   /** Whether the page is visible (`document.visibilityState`). */
@@ -109,6 +115,8 @@ export type SchedulerEvent =
       /** Which kind of page loaded; a board when omitted. */
       page?: LoadedPage;
       focused: boolean;
+      /** Whether the tab's browser window is the focused Chrome window; assumed `false` when left out. */
+      windowFocused?: boolean;
       /** Page visibility at load; assumed `true` when left out. */
       visible?: boolean;
       /** Whether the tab is active in its window at load; assumed `true` when left out. */
@@ -116,7 +124,10 @@ export type SchedulerEvent =
       /** What the previous page of this tab persisted, or `null` on a fresh tab. */
       restored: PersistedSchedulerState | null;
     }
+  /** The page gained or lost DOM focus. */
   | { type: "focus-changed"; focused: boolean }
+  /** The tab's browser window became, or stopped being, the focused Chrome window. */
+  | { type: "window-focus-changed"; focused: boolean }
   | { type: "visibility-changed"; visible: boolean }
   | { type: "tab-activity-changed"; active: boolean }
   | { type: "timer-fired" }
@@ -164,6 +175,7 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     phase: "starting",
     settings,
     focused: false,
+    windowFocused: false,
     signedOut: false,
     visible: true,
     active: true,
@@ -195,6 +207,7 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
         ...state,
         phase: "running",
         focused: event.focused,
+        windowFocused: event.windowFocused ?? false,
         signedOut: event.page === "sign-in",
         visible: event.visible ?? true,
         active: event.active ?? true,
@@ -206,6 +219,8 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
     }
     case "focus-changed":
       return { ...state, focused: event.focused };
+    case "window-focus-changed":
+      return { ...state, windowFocused: event.focused };
     case "visibility-changed":
       return { ...state, visible: event.visible };
     case "tab-activity-changed":
@@ -239,7 +254,9 @@ function withFailures(persisted: PersistedSchedulerState, count: number): Persis
 // Step 2 ----------------------------------------------------------------------
 
 const haltWhilePaused: HaltRule = (state) => (state.persisted.paused ? { badge: "idle", reason: "paused" } : null);
-const haltWhileFocused: HaltRule = (state) => (state.focused ? { badge: "idle", reason: "focused" } : null);
+/** Focused unless the page is blurred and its browser window is not the focused window either. */
+const haltWhileFocused: HaltRule = (state) =>
+  state.focused || state.windowFocused ? { badge: "idle", reason: "focused" } : null;
 
 /** In "Current tab" mode only the visible, active tab of its window refreshes. */
 const haltUnlessCurrentTab: HaltRule = (state) =>

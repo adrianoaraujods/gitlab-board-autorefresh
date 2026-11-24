@@ -1,14 +1,21 @@
 /**
  * Background Service Worker. Owns the per-tab toolbar badge, the dynamic
- * content-script registrations, active-tab tracking and the per-tab pause
- * state (#7).
+ * content-script registrations, active-tab and window-focus tracking and
+ * the per-tab pause state (#7).
  */
-import { sendToTab, type BackgroundMessage, type PauseReply, type TabActivityResponse } from "../shared/messages";
+import {
+  sendToTab,
+  type BackgroundMessage,
+  type PauseReply,
+  type TabActivityResponse,
+  type WindowFocusReply,
+} from "../shared/messages";
 import { onSettingsChanged } from "../shared/settings";
 import { setTabBadge } from "./badge";
 import { syncContentScripts } from "./content-script-registry";
 import { notifyTabActivity } from "./tab-activity";
 import { forgetTab, isTabPaused, setTabPaused } from "./tab-pause";
+import { isWindowFocused, notifyWindowFocus } from "./window-focus";
 
 chrome.runtime.onInstalled.addListener(() => void syncContentScripts());
 chrome.runtime.onStartup.addListener(() => void syncContentScripts());
@@ -19,6 +26,7 @@ onSettingsChanged((keys) => {
 });
 
 chrome.tabs.onActivated.addListener(({ windowId }) => void notifyTabActivity(windowId));
+chrome.windows.onFocusChanged.addListener((windowId) => void notifyWindowFocus(windowId));
 
 chrome.tabs.onRemoved.addListener((tabId) => void forgetTab(tabId));
 
@@ -43,6 +51,13 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendRe
       return;
     case "get-pause":
       reply(isTabPaused(tab.id), sendResponse);
+      return true;
+    case "get-window-focus":
+      void isWindowFocused(tab.windowId).then(
+        (focused) => sendResponse({ focused } satisfies WindowFocusReply),
+        // Unknown: treat as unfocused, as before window focus was tracked.
+        () => sendResponse({ focused: false } satisfies WindowFocusReply),
+      );
       return true;
   }
 });

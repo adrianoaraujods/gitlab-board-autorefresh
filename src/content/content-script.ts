@@ -1,7 +1,8 @@
 /**
  * Content Script Adapter (thin, untested glue). Injected on every page of a
  * granted origin; does nothing unless the page is an issue board. Turns window
- * focus/blur, page visibility, tab activity (from the background worker), the
+ * focus/blur, browser-window focus (asked on blur, and pushed by the background
+ * worker), page visibility, tab activity (from the background worker), the
  * scheduler timer and settings changes into Refresh Scheduler events, and
  * carries out the commands it returns.
  *
@@ -181,6 +182,21 @@ async function isActiveTab(): Promise<boolean> {
   }
 }
 
+async function isWindowFocused(): Promise<boolean> {
+  try {
+    const reply = await sendToBackground({ type: "get-window-focus" });
+    return reply?.focused === true;
+  } catch {
+    return false;
+  }
+}
+
+/** On a DOM blur, asks whether the browser window still has focus (toolbar popup, omnibox). */
+async function onBlur(): Promise<void> {
+  dispatch({ type: "focus-changed", focused: false });
+  dispatch({ type: "window-focus-changed", focused: await isWindowFocused() });
+}
+
 async function main(): Promise<void> {
   const settings = await loadSettings();
   const kind = matchBoardPage(location.href, settings.domains);
@@ -198,6 +214,7 @@ async function main(): Promise<void> {
   // Listen before asking, so an activity or pause change during the round trips isn't lost.
   let pendingActive: boolean | undefined;
   let pendingPaused: boolean | undefined;
+  let pendingWindowFocused: boolean | undefined;
   chrome.runtime.onMessage.addListener((message: ToContentMessage, _sender, sendResponse) => {
     switch (message.type) {
       case "tab-activity-changed":
@@ -208,25 +225,30 @@ async function main(): Promise<void> {
         if (state === undefined) pendingPaused = message.paused;
         else dispatch({ type: "pause-toggled", paused: message.paused });
         return;
+      case "window-focus-changed":
+        if (state === undefined) pendingWindowFocused = message.focused;
+        else dispatch({ type: "window-focus-changed", focused: message.focused });
+        return;
       case "get-status":
         sendResponse({ status: lastStatus } satisfies StatusReply);
         return;
     }
   });
-  const [active, paused] = await Promise.all([isActiveTab(), fetchPaused()]);
+  const [active, paused, windowFocused] = await Promise.all([isActiveTab(), fetchPaused(), isWindowFocused()]);
 
   state = initialSchedulerState({ intervalMs: settings.intervalSeconds * 1000, mode: settings.mode });
   dispatch({
     type: "page-loaded",
     page,
     focused: document.hasFocus(),
+    windowFocused: pendingWindowFocused ?? windowFocused,
     visible: document.visibilityState === "visible",
     active: pendingActive ?? active,
     restored: { ...(restored ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
   });
 
   window.addEventListener("focus", () => dispatch({ type: "focus-changed", focused: true }));
-  window.addEventListener("blur", () => dispatch({ type: "focus-changed", focused: false }));
+  window.addEventListener("blur", () => void onBlur());
   document.addEventListener("visibilitychange", () =>
     dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
   );

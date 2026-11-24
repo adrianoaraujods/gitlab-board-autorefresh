@@ -200,6 +200,39 @@ describe("Refresh Scheduler", () => {
     });
   });
 
+  describe("when the page loses DOM focus but its browser window keeps focus (toolbar popup, omnibox)", () => {
+    it("stays idle", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: true, windowFocused: true, restored: null }, T0);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + 5 * 60 * SECOND)).toEqual([]);
+    });
+
+    it("reloads once the browser window loses focus too", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: true, windowFocused: true, restored: null }, T0);
+      s.send({ type: "focus-changed", focused: false }, T0 + 5 * 60 * SECOND);
+      expect(s.send({ type: "window-focus-changed", focused: false }, T0 + 5 * 60 * SECOND)).toEqual([
+        { type: "check-blockers" },
+      ]);
+    });
+
+    it("is idle when a page loads blurred in the focused browser window", () => {
+      const s = scheduler();
+      expect(s.send({ type: "page-loaded", focused: false, windowFocused: true, restored: null }, T0)).toEqual([
+        { type: "set-badge", badge: "idle", reason: "focused" },
+      ]);
+    });
+
+    it("goes idle when the blurred page's browser window becomes the focused window", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, windowFocused: false, restored: null }, T0);
+      expect(s.send({ type: "window-focus-changed", focused: true }, T0 + 10 * SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "focused" },
+      ]);
+    });
+  });
+
   describe("when the window regains focus", () => {
     it("cancels the pending timer and goes idle", () => {
       const s = scheduler();

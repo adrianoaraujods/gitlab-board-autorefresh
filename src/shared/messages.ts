@@ -11,10 +11,16 @@ export type ContentToBackgroundMessage =
   /** Asks whether the sender's tab is the active tab of its window; answered with `TabActivityResponse`. */
   | { type: "get-tab-activity" }
   /** Asks whether the sender's tab is paused; answered with `PauseReply`. */
-  | { type: "get-pause" };
+  | { type: "get-pause" }
+  /** Asks whether the sender tab's browser window is the focused Chrome window; answered with `WindowFocusReply`. */
+  | { type: "get-window-focus" };
 
 export interface TabActivityResponse {
   active: boolean;
+}
+
+export interface WindowFocusReply {
+  focused: boolean;
 }
 
 /** Messages sent from the background service worker to a content script. */
@@ -24,7 +30,12 @@ export type BackgroundToContentMessage =
       /** Whether the receiving tab is now the active tab of its window. */
       active: boolean;
     }
-  | { type: "pause-toggled"; paused: boolean };
+  | { type: "pause-toggled"; paused: boolean }
+  | {
+      type: "window-focus-changed";
+      /** Whether the receiving tab's browser window is now the focused Chrome window. */
+      focused: boolean;
+    };
 
 /** Messages sent from the popup to the background service worker. */
 export type PopupToBackgroundMessage =
@@ -55,6 +66,7 @@ interface BackgroundReplies {
   "set-badge": void;
   "get-tab-activity": TabActivityResponse;
   "get-pause": PauseReply;
+  "get-window-focus": WindowFocusReply;
   "get-tab-pause": PauseReply;
   "set-tab-pause": PauseReply;
 }
@@ -63,6 +75,7 @@ interface BackgroundReplies {
 interface ContentReplies {
   "tab-activity-changed": void;
   "pause-toggled": void;
+  "window-focus-changed": void;
   "get-status": StatusReply;
 }
 
