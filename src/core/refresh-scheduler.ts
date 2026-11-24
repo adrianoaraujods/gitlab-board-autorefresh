@@ -11,14 +11,19 @@
  *    waiting for `nextDueAt`, or due.
  * 3. `realise` turns the plan into commands by diffing it against what was
  *    already commanded (timer, badge), so commands are only emitted on change.
- *    A due plan runs `onDue`, which reloads.
+ *    A due plan runs `onDue`, which checks for blockers and then reloads.
  *
- * Extending (tickets #4–#8): add an event to `SchedulerEvent` and handle it in
+ * A due reload first asks the adapter to run the Blocker Detector
+ * (`check-blockers`) and reloads only once it answers `blockers-checked` with
+ * no reasons (#4).
+ *
+ * Extending (tickets #5–#8): add an event to `SchedulerEvent` and handle it in
  * `applyEvent`; add input fields to `SchedulerState`; add a halt rule to
- * `HALT_RULES`; adjust `nextDueAt` (backoff, skipped ticks); route `onDue`
- * through a blocker check. Add commands to `SchedulerCommand`.
+ * `HALT_RULES`; adjust `nextDueAt` (backoff). Add commands to
+ * `SchedulerCommand`.
  */
 import type { BadgeState } from "./badge";
+import type { BlockerReason } from "./blocker-detector";
 
 export interface SchedulerSettings {
   intervalMs: number;
@@ -35,7 +40,7 @@ export interface PersistedSchedulerState {
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
-export type StatusReason = "focused" | "polling";
+export type StatusReason = "focused" | "polling" | "blocked";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -52,6 +57,14 @@ export interface SchedulerState {
   /** Whether the board's window has focus. */
   focused: boolean;
   persisted: PersistedSchedulerState;
+  /**
+   * The blocker check for the due reload: `idle` when none is outstanding,
+   * `pending` once `check-blockers` was commanded, `clear` when it answered
+   * with no reasons (the reload may go ahead in this transition only).
+   */
+  blockerCheck: "idle" | "pending" | "clear";
+  /** Epoch ms of the last tick skipped because something blocked the reload, or `null`. */
+  blockedAt: number | null;
   /** What has already been commanded, so `realise` can emit only changes. */
   commanded: {
     /** Epoch ms the pending timer is due at, or `null` if none is pending. */
@@ -69,13 +82,17 @@ export type SchedulerEvent =
     }
   | { type: "focus-changed"; focused: boolean }
   | { type: "timer-fired" }
-  | { type: "settings-changed"; settings: Partial<SchedulerSettings> };
+  | { type: "settings-changed"; settings: Partial<SchedulerSettings> }
+  /** The adapter's answer to `check-blockers`: what the Blocker Detector found (empty when nothing blocks). */
+  | { type: "blockers-checked"; reasons: readonly BlockerReason[] };
 
 export type SchedulerCommand =
   | { type: "reload" }
   /** Start the single scheduler timer, replacing any pending one. */
   | { type: "schedule-timer"; delayMs: number }
   | { type: "cancel-timer" }
+  /** Run the Blocker Detector and answer with a `blockers-checked` event. */
+  | { type: "check-blockers" }
   | ({ type: "set-badge" } & SchedulerStatus)
   /** Store this for the next page load of the tab (see `PersistedSchedulerState`). */
   | { type: "persist"; state: PersistedSchedulerState };
@@ -101,6 +118,8 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     settings,
     focused: false,
     persisted: { lastReloadAt: null },
+    blockerCheck: "idle",
+    blockedAt: null,
     commanded: { timerDueAt: null, status: null },
   };
 }
@@ -124,11 +143,18 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
         commanded: { timerDueAt: null, status: null },
       };
     case "focus-changed":
-      return { ...state, focused: event.focused };
+      // The user is back: whatever blocked the last tick gets a fresh check on the next blur.
+      return { ...state, focused: event.focused, blockedAt: event.focused ? null : state.blockedAt };
     case "timer-fired":
       return { ...state, commanded: { ...state.commanded, timerDueAt: null } };
     case "settings-changed":
       return { ...state, settings: { ...state.settings, ...event.settings } };
+    case "blockers-checked":
+      // An answer nobody is waiting for any more (the plan changed meanwhile) is stale.
+      if (state.blockerCheck !== "pending") return state;
+      return event.reasons.length === 0
+        ? { ...state, blockerCheck: "clear" }
+        : { ...state, blockerCheck: "idle", blockedAt: now };
   }
 }
 
@@ -140,6 +166,7 @@ const haltWhileFocused: HaltRule = (state) => (state.focused ? { badge: "idle", 
 export const HALT_RULES: readonly HaltRule[] = [haltWhileFocused];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
+const BLOCKED: SchedulerStatus = { badge: "blocked", reason: "blocked" };
 
 export function plan(state: SchedulerState, now: number): Plan {
   if (state.phase !== "running") return { kind: "frozen" };
@@ -148,13 +175,17 @@ export function plan(state: SchedulerState, now: number): Plan {
     if (status) return { kind: "halted", status };
   }
   const dueAt = nextDueAt(state);
-  return now >= dueAt ? { kind: "due" } : { kind: "waiting", dueAt, status: POLLING };
+  if (now >= dueAt) return { kind: "due" };
+  return { kind: "waiting", dueAt, status: state.blockedAt === null ? POLLING : BLOCKED };
 }
 
-/** When the next reload is due, as epoch ms. */
+/** When the next reload is due, as epoch ms: an interval after the last reload, or after the last blocked tick. */
 export function nextDueAt(state: SchedulerState): number {
   const { lastReloadAt } = state.persisted;
-  return lastReloadAt === null ? -Infinity : lastReloadAt + state.settings.intervalMs;
+  const { intervalMs } = state.settings;
+  const afterReload = lastReloadAt === null ? -Infinity : lastReloadAt + intervalMs;
+  const afterBlocked = state.blockedAt === null ? -Infinity : state.blockedAt + intervalMs;
+  return Math.max(afterReload, afterBlocked);
 }
 
 // Step 3 ----------------------------------------------------------------------
@@ -172,8 +203,15 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
   }
 }
 
-/** The reload is due: reload the page. */
+/** The reload is due: check for blockers first, and reload once nothing blocks. */
 export function onDue(state: SchedulerState, now: number): Transition {
+  if (state.blockerCheck === "pending") return { state, commands: [] };
+  if (state.blockerCheck === "idle") {
+    const commands: SchedulerCommand[] = [];
+    if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
+    commands.push({ type: "check-blockers" });
+    return { state: { ...state, blockerCheck: "pending", commanded: { ...state.commanded, timerDueAt: null } }, commands };
+  }
   const persisted = { ...state.persisted, lastReloadAt: now };
   const commands: SchedulerCommand[] = [];
   if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
@@ -194,5 +232,6 @@ function sync(state: SchedulerState, timerDueAt: number | null, status: Schedule
   if (commanded.status?.badge !== status.badge || commanded.status.reason !== status.reason) {
     commands.push({ type: "set-badge", ...status });
   }
-  return { state: { ...state, commanded: { timerDueAt, status } }, commands };
+  // Not due any more: an outstanding or passed blocker check no longer applies.
+  return { state: { ...state, blockerCheck: "idle", commanded: { timerDueAt, status } }, commands };
 }

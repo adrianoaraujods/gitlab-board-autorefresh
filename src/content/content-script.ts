@@ -4,9 +4,11 @@
  * focus/blur, the scheduler timer and settings changes into Refresh Scheduler
  * events, and carries out the commands it returns.
  *
- * Later tickets add visibility and tab-activity events (#6), the blocker
- * check (#4), pause (#7) and sign-in/failure handling (#8) here.
+ * Runs the Blocker Detector when the scheduler asks (#4). Later tickets add
+ * visibility and tab-activity events (#6), pause (#7) and sign-in/failure
+ * handling (#8) here.
  */
+import { detectBlockers } from "../core/blocker-detector";
 import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
 import {
   initialSchedulerState,
@@ -46,6 +48,10 @@ function run(command: SchedulerCommand): void {
     case "cancel-timer":
       clearTimeout(timer);
       timer = undefined;
+      return;
+    case "check-blockers":
+      // Answer once the current dispatch has finished running its commands.
+      queueMicrotask(() => dispatch({ type: "blockers-checked", reasons: [...detectBlockers(document)] }));
       return;
     case "set-badge":
       void sendToBackground({ type: "set-badge", badge: command.badge });
