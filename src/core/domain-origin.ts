@@ -31,6 +31,20 @@ export function originMatchPattern(origin: string): string {
   return `${origin}/*`;
 }
 
+/** A pattern for exactly one origin, as `originMatchPattern` makes it: no wildcard scheme or host. */
+const SINGLE_ORIGIN_PATTERN = /^https?:\/\/[^*/]+\/\*$/;
+
+/**
+ * The granted host patterns that no configured domain needs any more (for
+ * example, a domain removed on another synced profile), so their access can
+ * be given back. Only single-origin patterns, the only kind the options page
+ * requests, are ever returned.
+ */
+export function unneededOriginPatterns(grantedPatterns: readonly string[], configuredOrigins: readonly string[]): string[] {
+  const needed = new Set(configuredOrigins.map(originMatchPattern));
+  return grantedPatterns.filter((pattern) => SINGLE_ORIGIN_PATTERN.test(pattern) && !needed.has(pattern));
+}
+
 function fail(error: string): DomainOriginResult {
   return { ok: false, error };
 }

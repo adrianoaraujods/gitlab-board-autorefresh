@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDomainOrigin } from "./domain-origin";
+import { parseDomainOrigin, unneededOriginPatterns } from "./domain-origin";
 
 describe("parseDomainOrigin", () => {
   it.each([
@@ -28,5 +28,37 @@ describe("parseDomainOrigin", () => {
     const result = parseDomainOrigin(input);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).not.toBe("");
+  });
+});
+
+describe("unneededOriginPatterns", () => {
+  it("returns the pattern of a granted origin that is no longer configured", () => {
+    expect(
+      unneededOriginPatterns(["https://gitlab.com/*", "https://gitlab.example.com/*"], ["https://gitlab.com"]),
+    ).toEqual(["https://gitlab.example.com/*"]);
+  });
+
+  it("keeps every pattern a configured domain still needs", () => {
+    expect(
+      unneededOriginPatterns(
+        ["https://gitlab.com/*", "http://localhost:8080/*"],
+        ["http://localhost:8080", "https://gitlab.com"],
+      ),
+    ).toEqual([]);
+  });
+
+  it("tells ports and schemes apart", () => {
+    expect(
+      unneededOriginPatterns(
+        ["https://gitlab.example.com:8443/*", "http://gitlab.example.com/*"],
+        ["https://gitlab.example.com"],
+      ),
+    ).toEqual(["https://gitlab.example.com:8443/*", "http://gitlab.example.com/*"]);
+  });
+
+  it("leaves wildcard grants alone, which the options page never requests", () => {
+    expect(
+      unneededOriginPatterns(["https://*/*", "<all_urls>", "*://*.example.com/*", "https://*.example.com/*"], []),
+    ).toEqual([]);
   });
 });
