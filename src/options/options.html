@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Board Auto-Refresh for GitLab: options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Board Auto-Refresh for GitLab</h1>
+
+      <section aria-labelledby="domains-heading">
+        <h2 id="domains-heading">Domains</h2>
+        <p class="hint">
+          GitLab origins where issue boards are refreshed. Each one needs access granted with a click.
+        </p>
+        <ul id="domain-list"></ul>
+
+        <form id="add-domain-form" novalidate>
+          <label for="domain-input">Add a GitLab origin</label>
+          <div class="row">
+            <input id="domain-input" type="text" placeholder="https://gitlab.example.com" autocomplete="off" spellcheck="false" />
+            <button type="submit">Add</button>
+          </div>
+          <p id="domain-error" class="error" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <section aria-labelledby="interval-heading">
+        <h2 id="interval-heading">Refresh interval</h2>
+        <p class="hint">How often an unfocused board reloads. Minimum 10 seconds.</p>
+        <form id="interval-form" novalidate>
+          <label for="interval-input">Seconds between reloads</label>
+          <div class="row">
+            <input id="interval-input" type="number" min="10" step="1" inputmode="numeric" />
+            <button type="submit">Save</button>
+          </div>
+          <p id="interval-error" class="error" role="alert" hidden></p>
+          <p id="interval-saved" class="status granted" role="status" hidden>Saved.</p>
+        </form>
+      </section>
+
+      <section aria-labelledby="mode-heading">
+        <h2 id="mode-heading">Which tabs refresh</h2>
+        <fieldset id="mode-fieldset">
+          <legend class="hint">Board tabs that reload while their window is unfocused.</legend>
+          <label class="choice">
+            <input type="radio" name="mode" value="current-tab" />
+            <span><strong>Current tab</strong>: only the visible, active board tab in each window.</span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="mode" value="all-tabs" />
+            <span><strong>All tabs</strong>: background and hidden board tabs refresh too.</span>
+          </label>
+        </fieldset>
+        <p id="mode-error" class="error" role="alert" hidden></p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Issue Boards</title></head>
+<body class="modal-open" data-modal-open-count="1" data-page="projects:boards:show" data-page-type-id="1" data-project="demo">
+<div class="layout-page js-page-layout">
+ <div class="panels-container"><div class="content-panels js-content-panels">
+  <div class="paneled-view static-panel js-static-panel js-paneled-view content-wrapper">
+   <div class="panel-content"><div class="panel-content-inner js-static-panel-inner">
+    <div class="container-fluid issue-boards-content js-focus-mode-board">
+     <main id="content-body" class="content">
+      <h1 class="gl-sr-only">Issue Boards</h1>
+      <div class="boards-app gl-relative">
+       <div class="issues-filters">
+        <div class="gl-filtered-search-term" data-testid="filtered-search-term">
+         <input class="gl-filtered-search-term-input" data-testid="filtered-search-term-input" placeholder="Search or filter results…">
+        </div>
+        <div class="boards-switcher" data-testid="boards-selector">
+         <div class="gl-new-dropdown">
+          <button class="btn gl-new-dropdown-toggle" data-testid="base-dropdown-toggle" aria-haspopup="listbox" aria-expanded="false">Development</button>
+          <div class="gl-new-dropdown-panel" data-testid="base-dropdown-menu"><div class="gl-new-dropdown-inner">
+           <ul role="listbox" class="gl-new-dropdown-contents"></ul></div></div>
+         </div>
+        </div>
+       </div>
+       <div data-testid="boards-list" class="board-content gl-flex gl-flex-col">
+        <div class="boards-list gl-overflow-x-auto">
+         <div>
+          <div class="board-column is-draggable" data-list-id="gid://gitlab/List/1" data-testid="board-list">
+           <div class="board is-expandable"><div>
+            <header data-testid="board-list-header">Open</header>
+            <div role="group" class="board-list-component" data-testid="board-list-cards-area">
+             <ul class="board-list gl-overflow-y-auto" data-testid="tree-root-wrapper"
+                 data-board="gid://gitlab/List/1" data-board-type="backlog">
+              <li class="board-card" data-testid="board-card" data-item-id="gid://gitlab/Issue/11" data-item-iid="1" data-item-path="group/project#1">
+               <div><a class="board-card-button" data-testid="board-card-button" href="/group/project/-/issues/1"></a>
+                <span class="board-card-title">Example issue one</span></div>
+              </li>
+             </ul>
+            </div>
+           </div></div>
+          </div>
+          <div class="board-column is-draggable" data-list-id="gid://gitlab/List/2" data-testid="board-list">
+           <div class="board is-expandable"><div>
+            <div role="group" class="board-list-component" data-testid="board-list-cards-area">
+             <ul class="board-list gl-overflow-y-auto" data-testid="tree-root-wrapper"
+                 data-board="gid://gitlab/List/2" data-board-type="label"></ul>
+            </div>
+           </div></div>
+          </div>
+         </div>
+        </div>
+       </div>
+      </div>
+     </main>
+    </div>
+   </div></div>
+  </div>
+ </div>
+ <div id="contextual-panel-portal" class="paneled-view-portal"></div>
+ </div></div>
+</div>
+<div id="js-right-sidebar-portal"></div>
+<div id="board-config-modal___BV_modal_outer_" style="position:absolute;z-index:1040">
+ <div id="board-config-modal" role="dialog" aria-modal="true" class="modal fade show gl-modal" style="display:block">
+  <div class="modal-dialog"><div class="modal-content">
+   <form data-testid="board-form-wrapper"><input data-testid="board-name-field" class="form-control"></form>
+  </div></div>
+ </div>
+ <div class="modal-backdrop"></div>
+</div>
+</body>
+</html>
