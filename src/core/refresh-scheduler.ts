@@ -106,6 +106,11 @@ export interface PersistedSchedulerState {
    */
   baseline?: BoardFingerprint;
   /**
+   * Smart detection: changes found while the window was focused, waiting to
+   * be applied once it is not. A board load drops it (the load applies them).
+   */
+  pending?: { changedCount: number };
+  /**
    * Smart detection got a response it can't read (#13): the tab reloads like
    * "Always reload" while checks go on, until one is valid again. Absent
    * means detection works.
@@ -122,6 +127,7 @@ export type StatusReason =
   | "blocked"
   | "signed-out"
   | "reload-failed"
+  | "updates-available"
   /** Smart detection is degraded (#13): the board reloads on every interval. */
   | "detection-unavailable";
 
@@ -130,6 +136,8 @@ export interface SchedulerStatus {
   reason: StatusReason;
   /** What blocks the reload, in Blocker Detector order; only with reason `blocked`. */
   blockers?: readonly BlockerReason[];
+  /** Cards changed since the board loaded; only with reason `updates-available`. */
+  changedCount?: number;
 }
 
 export interface SchedulerState {
@@ -298,7 +306,9 @@ export function transition(state: SchedulerState, event: SchedulerEvent, now: nu
   const applied = applyEvent(state, event, now);
   const result = takeBaselineIfMissing(realise(applied, plan(applied, now), now), event);
   // A new failure count is stored at once, so the backoff survives the error page being reloaded.
-  if (failures(applied) !== failures(state) && !result.commands.some((c) => c.type === "persist")) {
+  const storedChanged =
+    failures(applied) !== failures(state) || applied.persisted.pending?.changedCount !== state.persisted.pending?.changedCount;
+  if (storedChanged && !result.commands.some((c) => c.type === "persist")) {
     result.commands.unshift({ type: "persist", state: applied.persisted });
   }
   return result;
@@ -335,7 +345,7 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       const page = event.page ?? "board";
       const merged = { ...state.persisted, ...restored, lastReloadAt: restored.lastReloadAt ?? now };
       // A full board load resets the baseline; an error or sign-in page keeps it.
-      const { baseline: _dropped, ...withoutBaseline } = merged;
+      const { baseline: _dropped, pending: _applied, ...withoutBaseline } = merged;
       const base = page === "board" ? withoutBaseline : merged;
       return {
         ...state,
@@ -406,16 +416,28 @@ function changesChecked(
       return { ...state, reloadCheck: "idle", signedOut: true };
     case "unchanged": {
       // The server answered, so earlier failures are over; the next check is an interval from now.
-      const persisted = withFailures(withoutDegraded({ ...state.persisted, baseline: detection.fingerprint }), 0);
+      const { pending: _gone, ...rest } = state.persisted;
+      const persisted = withFailures(withoutDegraded({ ...rest, baseline: detection.fingerprint }), 0);
       return { ...state, reloadCheck: "idle", lastCheckAt: now, blocked: null, persisted };
     }
     case "remote":
+      if (isFocused(state)) {
+        // Never reload a focused board: remember the change and keep the old baseline, so counts add up.
+        const persisted = withFailures(withoutDegraded({ ...state.persisted, pending: { changedCount: detection.changedCount } }), 0);
+        return { ...state, reloadCheck: "idle", lastCheckAt: now, persisted };
+      }
       // Keep the old baseline: if the reload is blocked, the next check still sees the change.
       return { ...state, reloadCheck: "changed", persisted: withFailures(withoutDegraded(state.persisted), 0) };
     case "invalid":
+      // Focused: the page stays; note the degraded state and look again an interval later.
+      if (isFocused(state)) {
+        return { ...state, reloadCheck: "idle", lastCheckAt: now, persisted: { ...state.persisted, degraded: true } };
+      }
       // Degraded: reload like v1 now and on later ticks, checking each time until a response is valid.
       return { ...state, reloadCheck: "changed", persisted: { ...state.persisted, degraded: true } };
     default:
+      // Focused: nothing to apply, just look again an interval later.
+      if (isFocused(state)) return { ...state, reloadCheck: "idle", lastCheckAt: now };
       // A failed request or a response detection can't read: reload like v1. A failed
       // request then fails the reachability check too, and backs off.
       return { ...state, reloadCheck: "changed" };
@@ -444,8 +466,20 @@ function withFailures(persisted: PersistedSchedulerState, count: number): Persis
 
 const haltWhilePaused: HaltRule = (state) => (state.persisted.paused ? { badge: "idle", reason: "paused" } : null);
 /** Focused unless the page is blurred and its browser window is not the focused window either. */
-const haltWhileFocused: HaltRule = (state) =>
-  state.focused || state.windowFocused ? { badge: "idle", reason: "focused" } : null;
+const haltWhileFocused: HaltRule = (state) => (isFocused(state) ? FOCUSED : null);
+
+function isFocused(state: SchedulerState): boolean {
+  return state.focused || state.windowFocused;
+}
+
+const FOCUSED: SchedulerStatus = { badge: "idle", reason: "focused" };
+
+/** What a focused board shows: the blue updates badge while changes wait, otherwise idle. */
+function focusedStatus(state: SchedulerState): SchedulerStatus {
+  const pending = state.persisted.pending;
+  if (pending === undefined) return FOCUSED;
+  return { badge: "updates", reason: "updates-available", changedCount: pending.changedCount };
+}
 
 /** In "Current tab" mode only the visible, active tab of its window refreshes. */
 const haltUnlessCurrentTab: HaltRule = (state) =>
@@ -465,11 +499,19 @@ export function plan(state: SchedulerState, now: number): Plan {
   if (state.phase !== "running") return { kind: "frozen" };
   for (const rule of HALT_RULES) {
     const status = rule(state);
+    if (status === FOCUSED && detecting(state)) return planFocusedChecks(state, now);
     if (status) return { kind: "halted", status: keepRedWhileFailing(state, status) };
   }
   const dueAt = nextDueAt(state);
   if (now >= dueAt) return { kind: "due" };
   return { kind: "waiting", dueAt, status: waitingStatus(state) };
+}
+
+/** A focused board in smart detection keeps checking on schedule, but never reloads. */
+function planFocusedChecks(state: SchedulerState, now: number): Plan {
+  const dueAt = nextDueAt(state);
+  if (now >= dueAt) return { kind: "due" };
+  return { kind: "waiting", dueAt, status: keepRedWhileFailing(state, focusedStatus(state)) };
 }
 
 /** A skipped (blocked) tick shows yellow until the next check, even while failures back off; otherwise failing reloads show red. */
@@ -497,20 +539,25 @@ export function nextDueAt(state: SchedulerState): number {
   const { lastReloadAt } = state.persisted;
   const { intervalMs } = state.settings;
   const backoff = Math.min(intervalMs * 2 ** failures(state), Math.max(MAX_BACKOFF_MS, intervalMs));
-  const afterReload = lastReloadAt === null ? -Infinity : lastReloadAt + backoff;
-  const afterCheck = state.lastCheckAt === null ? -Infinity : state.lastCheckAt + intervalMs;
+  // Waiting changes are applied at once when the window is left, not an interval after the last check.
+  const applying = state.persisted.pending !== undefined && !isFocused(state);
+  const afterReload = lastReloadAt === null || (applying && failures(state) === 0) ? -Infinity : lastReloadAt + backoff;
+  const afterCheck = state.lastCheckAt === null || applying ? -Infinity : state.lastCheckAt + intervalMs;
   const afterBlocked = state.blocked === null ? -Infinity : state.blocked.at + intervalMs;
   return Math.max(afterReload, afterCheck, afterBlocked);
 }
 
 // Step 3 ----------------------------------------------------------------------
 
+const FOCUSED_CHECKS: readonly ReloadCheck[] = ["idle", "changes-pending"];
+
 export function realise(state: SchedulerState, planned: Plan, now: number): Transition {
   switch (planned.kind) {
     case "frozen":
       return { state, commands: [] };
     case "due":
-      return onDue(state, now);
+      // A focused board only checks: drop any apply that was under way when it got focus.
+      return onDue(isFocused(state) && !FOCUSED_CHECKS.includes(state.reloadCheck) ? { ...state, reloadCheck: "idle" } : state, now);
     case "halted":
       // Whatever blocked the last tick gets a fresh check as soon as refreshing resumes.
       return sync({ ...state, blocked: null }, null, planned.status, now);
@@ -532,7 +579,8 @@ export function onDue(state: SchedulerState, now: number): Transition {
     commands.push(step.command);
     return { state: { ...state, reloadCheck: step.next, commanded }, commands };
   }
-  const persisted = { ...state.persisted, lastReloadAt: now };
+  const { pending: _applied, ...kept } = state.persisted;
+  const persisted = { ...kept, lastReloadAt: now };
   commands.push({ type: "persist", state: persisted }, { type: "reload" });
   return {
     state: { ...state, phase: "reloading", persisted, reloadCheck: "idle", blocked: null, commanded },
@@ -548,7 +596,10 @@ type DueStep = { command: SchedulerCommand; next: ReloadCheck } | "reload" | nul
  * board changed; `changed` then goes through the same checks as a v1 tick.
  */
 function dueStep(state: SchedulerState, now: number): DueStep {
-  if (state.reloadCheck === "idle" && detecting(state) && !safetyNetUp(state, now)) {
+  // Changes found while focused are known: apply them without asking again.
+  if (state.reloadCheck === "idle" && state.persisted.pending !== undefined && !isFocused(state)) return DUE_STEPS.changed;
+  // A focused board only checks: the safety net waits until the window is left.
+  if (state.reloadCheck === "idle" && detecting(state) && (isFocused(state) || !safetyNetUp(state, now))) {
     return { command: { type: "check-changes", baseline: state.persisted.baseline ?? null }, next: "changes-pending" };
   }
   return DUE_STEPS[state.reloadCheck];
@@ -586,7 +637,7 @@ function sync(state: SchedulerState, timerDueAt: number | null, status: Schedule
 }
 
 function sameStatus(a: SchedulerStatus | null, b: SchedulerStatus): boolean {
-  if (a === null || a.badge !== b.badge || a.reason !== b.reason) return false;
+  if (a === null || a.badge !== b.badge || a.reason !== b.reason || a.changedCount !== b.changedCount) return false;
   const [x = [], y = []] = [a.blockers, b.blockers];
   return x.length === y.length && x.every((reason, i) => reason === y[i]);
 }

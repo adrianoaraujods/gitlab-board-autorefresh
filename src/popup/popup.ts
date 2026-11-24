@@ -11,6 +11,7 @@ import { sendToBackground, sendToTab } from "../shared/messages";
 const BADGE_LABELS: Record<BadgeState, string> = {
   idle: "Idle",
   polling: "Auto-refreshing",
+  updates: "Updates available",
   blocked: "Blocked",
   error: "Error",
 };
@@ -22,6 +23,7 @@ const REASON_TEXT: Record<StatusReason, string> = {
   "not-current-tab": "Only the visible tab of each window refreshes (\"Current tab\" mode).",
   blocked: "You're in the middle of something on the board, so the reload waits for the next tick:",
   "signed-out": "Signed out of GitLab, so auto-refresh stopped. Sign in again to resume.",
+  "updates-available": "Updates available — will refresh when you switch away",
   "reload-failed": "Reloads are failing (server unreachable or an error page); retrying with backoff up to 5 minutes.",
   "detection-unavailable": "Change detection unavailable — reloading on every interval.",
 };
@@ -79,9 +81,10 @@ function renderStatus(status: SchedulerStatus | null): void {
     details.hidden = true;
     return;
   }
-  const { badge, reason: statusReason, blockers = [] } = status;
+  const { badge, reason: statusReason, blockers = [], changedCount } = status;
   dot.dataset.badge = badge;
-  text.textContent = BADGE_LABELS[badge] ?? humanize(badge);
+  const label = BADGE_LABELS[badge] ?? humanize(badge);
+  text.textContent = changedCount === undefined ? label : `${label} (${changedCount} changed)`;
   reason.textContent = REASON_TEXT[statusReason] ?? humanize(statusReason);
 
   details.replaceChildren(

@@ -7,6 +7,8 @@ export type ContentToBackgroundMessage =
       type: "set-badge";
       /** `null` clears the badge (not a board page). */
       badge: BadgeState | null;
+      /** Cards changed, shown as the badge text of the `updates` badge. */
+      count?: number;
     }
   /** Asks whether the sender's tab is the active tab of its window; answered with `TabActivityResponse`. */
   | { type: "get-tab-activity" }

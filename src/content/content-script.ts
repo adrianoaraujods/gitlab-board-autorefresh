@@ -99,7 +99,7 @@ function run(command: SchedulerCommand): void {
     case "set-badge": {
       const { type: _type, ...status } = command;
       lastStatus = status;
-      void sendToBackground({ type: "set-badge", badge: command.badge });
+      void sendToBackground({ type: "set-badge", badge: command.badge, count: command.changedCount });
       return;
     }
     case "persist":

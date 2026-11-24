@@ -9,6 +9,7 @@ h1 { font-size: 1rem; margin: 0 0 8px; }
 .status { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: #8a8a8a; flex: none; }
 .dot[data-badge="polling"] { background: #1f883d; }
+.dot[data-badge="updates"] { background: #0969da; }
 .dot[data-badge="blocked"] { background: #d4a72c; }
 .dot[data-badge="error"] { background: #cf222e; }
 .dot[data-badge="none"] { background: transparent; border: 1px solid GrayText; }

@@ -825,6 +825,7 @@ describe("Refresh Scheduler: smart detection", () => {
     it("takes the baseline even while the window is focused", () => {
       const s = smartScheduler();
       expect(s.send({ type: "page-loaded", focused: true, restored: null }, T0)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
         { type: "set-badge", badge: "idle", reason: "focused" },
         { type: "check-changes", baseline: null },
       ]);
@@ -930,19 +931,134 @@ describe("Refresh Scheduler: smart detection", () => {
       ]);
     });
 
-    it("ignores a check answer that arrives after the window got focus", () => {
+    it("doesn't reload on a check answer that arrives after the window got focus", () => {
       const s = smartBoardLoadedAt(T0);
       s.send({ type: "timer-fired" }, T0 + INTERVAL);
       s.send({ type: "focus-changed", focused: true }, T0 + INTERVAL);
-      expect(s.send(CHANGED, T0 + INTERVAL + SECOND)).toEqual([]);
+      expect(s.send(CHANGED, T0 + INTERVAL + SECOND)).not.toContainEqual({ type: "check-blockers" });
     });
   });
 
   describe("while the window is focused", () => {
-    it("neither checks nor reloads", () => {
+    /** A smart tab that loaded focused at T0 and took its baseline. */
+    function focusedSmart() {
       const s = smartScheduler();
       s.send({ type: "page-loaded", focused: true, restored: { lastReloadAt: T0 } }, T0);
       s.send(UNCHANGED_AT_LOAD, T0);
+      return s;
+    }
+    const UPDATES = { type: "set-badge", badge: "updates", reason: "updates-available", changedCount: 2 };
+
+    it("keeps checking every interval, without reloading", () => {
+      const s = focusedSmart();
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-changes", baseline: BOARD_AT_LOAD }]);
+    });
+
+    it("stays idle and never reloads when nothing changed", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send(UNCHANGED_AT_LOAD, T0 + INTERVAL)).toEqual([{ type: "schedule-timer", delayMs: INTERVAL }]);
+    });
+
+    it("shows the blue updates badge with the count on a remote change, and doesn't reload", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send(CHANGED, T0 + INTERVAL)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0, baseline: BOARD_AT_LOAD, pending: { changedCount: 2 } } },
+        { type: "schedule-timer", delayMs: INTERVAL },
+        UPDATES,
+      ]);
+    });
+
+    it("keeps checking against the old baseline while changes wait", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-changes", baseline: BOARD_AT_LOAD }]);
+    });
+
+    it("clears the badge when the board is back to how it was", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL);
+      expect(s.send(UNCHANGED_AT_LOAD, T0 + 2 * INTERVAL)).toContainEqual({ type: "set-badge", badge: "idle", reason: "focused" });
+    });
+
+    it("applies the waiting changes as soon as the window is blurred, through the blocker checks", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + INTERVAL + SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "check-blockers" },
+      ]);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL + SECOND)).toEqual(CHECK_REACHABILITY);
+      expect(s.send(REACHABLE, T0 + INTERVAL + SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + INTERVAL + SECOND, baseline: BOARD_AT_LOAD } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("retries a blocked apply on the next tick", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send({ type: "focus-changed", focused: false }, T0 + INTERVAL + SECOND);
+      expect(s.send({ type: "blockers-checked", reasons: ["sidebar-open"] }, T0 + INTERVAL + SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "blocked", reason: "blocked", blockers: ["sidebar-open"] },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL + SECOND)).toEqual([{ type: "check-blockers" }]);
+    });
+
+    it("shows the updates badge again when the window is refocused after a blocked apply", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send({ type: "focus-changed", focused: false }, T0 + INTERVAL + SECOND);
+      s.send({ type: "blockers-checked", reasons: ["sidebar-open"] }, T0 + INTERVAL + SECOND);
+      expect(s.send({ type: "focus-changed", focused: true }, T0 + INTERVAL + 2 * SECOND)).toContainEqual(UPDATES);
+    });
+
+    it("never reloads a focused tab whose blocker check was still outstanding when it got focus", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send({ type: "focus-changed", focused: true }, T0 + INTERVAL);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).not.toContainEqual({ type: "check-reachability" });
+    });
+
+    it("doesn't reload a focused board whose check came back unreadable", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send(INVALID, T0 + INTERVAL)).not.toContainEqual({ type: "check-blockers" });
+    });
+
+    it("keeps pause above pending changes", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      expect(s.send({ type: "pause-toggled", paused: true }, T0 + INTERVAL)).toContainEqual({
+        type: "set-badge",
+        badge: "idle",
+        reason: "paused",
+      });
+    });
+
+    it("doesn't apply pending changes on a tab that isn't the current tab", () => {
+      const s = focusedSmart();
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send({ type: "visibility-changed", visible: false }, T0 + INTERVAL);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + INTERVAL + SECOND)).not.toContainEqual({
+        type: "check-blockers",
+      });
+    });
+
+    it("stays focused-idle with no checks in Always reload", () => {
+      const s = scheduler(INTERVAL, "current-tab", "always-reload");
+      s.send({ type: "page-loaded", focused: true, restored: { lastReloadAt: T0 } }, T0);
       expect(s.send({ type: "timer-fired" }, T0 + 5 * INTERVAL)).toEqual([]);
     });
   });
