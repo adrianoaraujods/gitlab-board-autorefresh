@@ -8,7 +8,7 @@
 export type BoardPageKind = "project-board" | "group-board" | "sign-in" | "none";
 
 const BOARDS_PATH = /^(?<owner>.*)\/-\/boards(?:\/\d+)?\/?$/;
-const SIGN_IN_PATH = /\/users\/sign_in\/?$/;
+const SIGN_IN_PATH = /\/users\/(?:auth\/geo\/)?sign_in\/?$/;
 
 export function matchBoardPage(url: string, configuredOrigins: readonly string[]): BoardPageKind {
   let parsed: URL;

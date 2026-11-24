@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   initialSchedulerState,
   transition,
+  type PersistedSchedulerState,
   type SchedulerCommand,
   type SchedulerEvent,
   type SchedulerState,
@@ -366,6 +367,163 @@ describe("Refresh Scheduler", () => {
       s.send({ type: "pause-toggled", paused: true }, T0 + SECOND);
       expect(s.send({ type: "pause-toggled", paused: false }, T0 + 2 * SECOND)).toEqual([
         { type: "set-badge", badge: "idle", reason: "focused" },
+      ]);
+    });
+  });
+});
+
+describe("Refresh Scheduler: session loss and failures", () => {
+  const MINUTE = 60 * SECOND;
+
+  describe("when a reload fails", () => {
+    it("turns the badge red and retries after twice the interval when the reload lands on an error page", () => {
+      const s = scheduler();
+      // The previous page reloaded at T0; the error page comes up 1s later.
+      expect(
+        s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0 + SECOND),
+      ).toEqual([
+        { type: "persist", state: { lastReloadAt: T0, consecutiveFailures: 1 } },
+        { type: "schedule-timer", delayMs: 2 * INTERVAL - SECOND },
+        { type: "set-badge", badge: "error", reason: "reload-failed" },
+      ]);
+    });
+
+    it("doubles the delay with each consecutive failure, capped at 5 minutes", () => {
+      // Each failed reload is attempted when its timer fires; the error page then comes up on that timestamp.
+      const delays: number[] = [];
+      let restored: PersistedSchedulerState = { lastReloadAt: T0 };
+      let at = T0;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const s = scheduler();
+        const commands = s.send({ type: "page-loaded", page: "error", focused: false, restored }, at);
+        const timer = commands.find((c) => c.type === "schedule-timer");
+        if (timer?.type !== "schedule-timer") throw new Error("expected a timer");
+        delays.push(timer.delayMs);
+        at += timer.delayMs;
+        const reload = s.send({ type: "timer-fired" }, at);
+        const persisted = reload.find((c) => c.type === "persist");
+        if (persisted?.type !== "persist") throw new Error("expected a persist");
+        restored = persisted.state;
+      }
+      expect(delays).toEqual([60 * SECOND, 2 * MINUTE, 4 * MINUTE, 5 * MINUTE, 5 * MINUTE, 5 * MINUTE]);
+    });
+
+    it("never backs off to less than the interval when the interval is longer than the cap", () => {
+      const s = scheduler(10 * MINUTE);
+      expect(
+        s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0),
+      ).toContainEqual({ type: "schedule-timer", delayMs: 10 * MINUTE });
+    });
+
+    it("resets the backoff and the badge on the first successful board load", () => {
+      const s = scheduler();
+      const failedAt = T0 + 4 * MINUTE;
+      expect(
+        s.send(
+          { type: "page-loaded", page: "board", focused: false, restored: { lastReloadAt: failedAt, consecutiveFailures: 3 } },
+          failedAt + SECOND,
+        ),
+      ).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL - SECOND },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, failedAt + INTERVAL)).toEqual([
+        { type: "persist", state: { lastReloadAt: failedAt + INTERVAL } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("retries after the backoff when the reload could not even start", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + 45 * SECOND);
+      expect(s.send({ type: "reload-failed" }, T0 + 46 * SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 45 * SECOND, consecutiveFailures: 1 } },
+        { type: "schedule-timer", delayMs: 2 * INTERVAL - SECOND },
+        { type: "set-badge", badge: "error", reason: "reload-failed" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 45 * SECOND + 2 * INTERVAL)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 45 * SECOND + 2 * INTERVAL, consecutiveFailures: 1 } },
+        { type: "reload" },
+      ]);
+      expect(s.send({ type: "reload-failed" }, T0 + 46 * SECOND + 2 * INTERVAL)).toContainEqual({
+        type: "schedule-timer",
+        delayMs: 4 * INTERVAL - SECOND,
+      });
+    });
+
+    it("stops retrying while focused but keeps the badge red", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0);
+      expect(s.send({ type: "focus-changed", focused: true }, T0 + SECOND)).toEqual([{ type: "cancel-timer" }]);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * MINUTE)).toEqual([]);
+    });
+
+    it("keeps the badge red when a failing tab stops being the current tab", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0);
+      expect(s.send({ type: "visibility-changed", visible: false }, T0 + SECOND)).toEqual([{ type: "cancel-timer" }]);
+    });
+
+    it("shows a pause over the failure, and red again on resume", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0);
+      expect(s.send({ type: "pause-toggled", paused: true }, T0 + SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "paused" },
+      ]);
+      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 2 * SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: 2 * INTERVAL - 2 * SECOND },
+        { type: "set-badge", badge: "error", reason: "reload-failed" },
+      ]);
+    });
+
+    it("shows a red badge on an error page that loads focused", () => {
+      const s = scheduler();
+      expect(
+        s.send({ type: "page-loaded", page: "error", focused: true, restored: { lastReloadAt: T0 } }, T0 + SECOND),
+      ).toEqual([
+        { type: "persist", state: { lastReloadAt: T0, consecutiveFailures: 1 } },
+        { type: "set-badge", badge: "error", reason: "reload-failed" },
+      ]);
+    });
+  });
+
+  describe("when a reload lands on the sign-in page", () => {
+    it("stops refreshing and turns the badge red", () => {
+      const s = scheduler();
+      expect(
+        s.send({ type: "page-loaded", page: "sign-in", focused: false, restored: { lastReloadAt: T0 } }, T0 + SECOND),
+      ).toEqual([{ type: "set-badge", badge: "error", reason: "signed-out" }]);
+    });
+
+    it("never reloads the sign-in page, focused or not", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", page: "sign-in", focused: false, restored: { lastReloadAt: T0 } }, T0 + SECOND);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * MINUTE)).toEqual([]);
+      expect(s.send({ type: "focus-changed", focused: true }, T0 + 11 * MINUTE)).toEqual([]);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + 12 * MINUTE)).toEqual([]);
+    });
+
+    it("shows signed-out even on a paused tab", () => {
+      const s = scheduler();
+      expect(
+        s.send(
+          { type: "page-loaded", page: "sign-in", focused: false, restored: { lastReloadAt: T0, paused: true } },
+          T0 + SECOND,
+        ),
+      ).toEqual([{ type: "set-badge", badge: "error", reason: "signed-out" }]);
+    });
+
+    it("starts refreshing again once a board loads after signing in", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", page: "sign-in", focused: true, restored: { lastReloadAt: T0 } }, T0 + SECOND);
+      // Signing in redirects back to the board: a new page in the same tab.
+      const board = scheduler();
+      expect(
+        board.send({ type: "page-loaded", page: "board", focused: false, restored: { lastReloadAt: T0 } }, T0 + 2 * MINUTE),
+      ).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 2 * MINUTE } },
+        { type: "reload" },
       ]);
     });
   });

@@ -39,6 +39,8 @@ export interface SchedulerSettings {
 export interface PersistedSchedulerState {
   /** Epoch ms of the last reload, or the first load of the tab. */
   lastReloadAt: number | null;
+  /** Reloads that failed in a row since the last board load; absent means none. */
+  consecutiveFailures?: number;
   /**
    * Whether the user paused this tab from the popup. Optional so a restored
    * state without it keeps the current value (the background worker owns the
@@ -48,7 +50,7 @@ export interface PersistedSchedulerState {
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
-export type StatusReason = "paused" | "focused" | "polling" | "not-current-tab";
+export type StatusReason = "paused" | "focused" | "polling" | "not-current-tab" | "signed-out" | "reload-failed";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -64,6 +66,8 @@ export interface SchedulerState {
   settings: SchedulerSettings;
   /** Whether the board's window has focus. */
   focused: boolean;
+  /** The page loaded in the tab is the sign-in page: the session has expired. */
+  signedOut: boolean;
   /** Whether the page is visible (`document.visibilityState`). */
   visible: boolean;
   /** Whether the tab is the active tab of its window. */
@@ -80,6 +84,8 @@ export interface SchedulerState {
 export type SchedulerEvent =
   | {
       type: "page-loaded";
+      /** Which kind of page loaded; a board when omitted. */
+      page?: LoadedPage;
       focused: boolean;
       /** Page visibility at load; assumed `true` when left out. */
       visible?: boolean;
@@ -92,8 +98,16 @@ export type SchedulerEvent =
   | { type: "visibility-changed"; visible: boolean }
   | { type: "tab-activity-changed"; active: boolean }
   | { type: "timer-fired" }
+  /** The commanded reload could not be carried out (for example, the server is unreachable); the page stays. */
+  | { type: "reload-failed" }
   | { type: "settings-changed"; settings: Partial<SchedulerSettings> }
   | { type: "pause-toggled"; paused: boolean };
+
+/**
+ * `board`: an issue board loaded. `sign-in`: the tab landed on the sign-in
+ * page. `error`: the tab's board URL loaded an error page instead of a board.
+ */
+export type LoadedPage = "board" | "sign-in" | "error";
 
 export type SchedulerCommand =
   | { type: "reload" }
@@ -124,6 +138,7 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     phase: "starting",
     settings,
     focused: false,
+    signedOut: false,
     visible: true,
     active: true,
     persisted: { lastReloadAt: null },
@@ -133,24 +148,34 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
 
 export function transition(state: SchedulerState, event: SchedulerEvent, now: number): Transition {
   const applied = applyEvent(state, event, now);
-  return realise(applied, plan(applied, now), now);
+  const result = realise(applied, plan(applied, now), now);
+  // A new failure count is stored at once, so the backoff survives the error page being reloaded.
+  if (failures(applied) !== failures(state) && !result.commands.some((c) => c.type === "persist")) {
+    result.commands.unshift({ type: "persist", state: applied.persisted });
+  }
+  return result;
 }
 
 // Step 1 ----------------------------------------------------------------------
 
 export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: number): SchedulerState {
   switch (event.type) {
-    case "page-loaded":
+    case "page-loaded": {
+      const { consecutiveFailures = 0, ...restored }: Partial<PersistedSchedulerState> = event.restored ?? {};
+      const base = { ...state.persisted, ...restored, lastReloadAt: restored.lastReloadAt ?? now };
       return {
         ...state,
         phase: "running",
         focused: event.focused,
+        signedOut: event.page === "sign-in",
         visible: event.visible ?? true,
         active: event.active ?? true,
-        persisted: { ...state.persisted, ...event.restored, lastReloadAt: event.restored?.lastReloadAt ?? now },
+        // An error page counts one more failure; any other page ends the run of failures.
+        persisted: withFailures(base, event.page === "error" ? consecutiveFailures + 1 : 0),
         // A new page has no timer and a fresh badge.
         commanded: { timerDueAt: null, status: null },
       };
+    }
     case "focus-changed":
       return { ...state, focused: event.focused };
     case "visibility-changed":
@@ -159,11 +184,22 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return { ...state, active: event.active };
     case "timer-fired":
       return { ...state, commanded: { ...state.commanded, timerDueAt: null } };
+    case "reload-failed":
+      return { ...state, phase: "running", persisted: withFailures(state.persisted, failures(state) + 1) };
     case "settings-changed":
       return { ...state, settings: { ...state.settings, ...event.settings } };
     case "pause-toggled":
       return { ...state, persisted: { ...state.persisted, paused: event.paused } };
   }
+}
+
+function failures(state: SchedulerState): number {
+  return state.persisted.consecutiveFailures ?? 0;
+}
+
+function withFailures(persisted: PersistedSchedulerState, count: number): PersistedSchedulerState {
+  const { consecutiveFailures: _dropped, ...rest } = persisted;
+  return count > 0 ? { ...rest, consecutiveFailures: count } : rest;
 }
 
 // Step 2 ----------------------------------------------------------------------
@@ -177,25 +213,39 @@ const haltUnlessCurrentTab: HaltRule = (state) =>
     ? { badge: "idle", reason: "not-current-tab" }
     : null;
 
+const haltWhenSignedOut: HaltRule = (state) => (state.signedOut ? { badge: "error", reason: "signed-out" } : null);
+
 /** Checked in order; the first rule that halts wins. */
-export const HALT_RULES: readonly HaltRule[] = [haltWhilePaused, haltWhileFocused, haltUnlessCurrentTab];
+export const HALT_RULES: readonly HaltRule[] = [haltWhenSignedOut, haltWhilePaused, haltWhileFocused, haltUnlessCurrentTab];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
+const FAILING: SchedulerStatus = { badge: "error", reason: "reload-failed" };
 
 export function plan(state: SchedulerState, now: number): Plan {
   if (state.phase !== "running") return { kind: "frozen" };
   for (const rule of HALT_RULES) {
     const status = rule(state);
-    if (status) return { kind: "halted", status };
+    if (status) return { kind: "halted", status: keepRedWhileFailing(state, status) };
   }
   const dueAt = nextDueAt(state);
-  return now >= dueAt ? { kind: "due" } : { kind: "waiting", dueAt, status: POLLING };
+  return now >= dueAt ? { kind: "due" } : { kind: "waiting", dueAt, status: failures(state) > 0 ? FAILING : POLLING };
 }
 
-/** When the next reload is due, as epoch ms. */
+/** A failing tab that stops for focus or tab activity keeps its red badge until a board loads; a pause still shows. */
+function keepRedWhileFailing(state: SchedulerState, status: SchedulerStatus): SchedulerStatus {
+  return failures(state) > 0 && status.badge === "idle" && status.reason !== "paused" ? FAILING : status;
+}
+
+/** Failed reloads back off up to this delay (or the interval, if that is longer). */
+export const MAX_BACKOFF_MS = 5 * 60 * 1000;
+
+/** When the next reload is due, as epoch ms. After failures the interval doubles per failure, capped. */
 export function nextDueAt(state: SchedulerState): number {
   const { lastReloadAt } = state.persisted;
-  return lastReloadAt === null ? -Infinity : lastReloadAt + state.settings.intervalMs;
+  if (lastReloadAt === null) return -Infinity;
+  const { intervalMs } = state.settings;
+  const backoff = Math.min(intervalMs * 2 ** failures(state), Math.max(MAX_BACKOFF_MS, intervalMs));
+  return lastReloadAt + backoff;
 }
 
 // Step 3 ----------------------------------------------------------------------

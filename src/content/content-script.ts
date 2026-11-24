@@ -7,8 +7,17 @@
  *
  * It also answers the popup's status query and applies pause toggles (#7);
  * the background worker owns the pause flag, which is merged into the
- * restored state on load. Later tickets add the blocker check (#4) and
- * sign-in/failure handling (#8) here.
+ * restored state on load.
+ *
+ * Registration covers the whole origin, so this script also runs on the
+ * sign-in page and on error pages served at a board URL, and reports them (#8):
+ * - sign-in page in a tab that was refreshing a board → `page-loaded` sign-in;
+ * - board URL whose document is not a board (HTTP error page) → `page-loaded` error.
+ * A server that can't be reached at all shows Chrome's own error page, where no
+ * content script runs, so each reload is preceded by a cheap HEAD request; if
+ * that fails the page stays and `reload-failed` is reported instead.
+ *
+ * A later ticket adds the blocker check (#4) here.
  */
 import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
 import {
@@ -50,8 +59,7 @@ function dispatch(event: SchedulerEvent): void {
 function run(command: SchedulerCommand): void {
   switch (command.type) {
     case "reload":
-      saveScroll();
-      location.reload();
+      void reloadIfReachable();
       return;
     case "schedule-timer":
       clearTimeout(timer);
@@ -75,6 +83,47 @@ function run(command: SchedulerCommand): void {
       return;
   }
 }
+
+/** How long the pre-reload reachability check may take before it counts as failed. */
+const PREFLIGHT_TIMEOUT_MS = 30_000;
+
+async function reloadIfReachable(): Promise<void> {
+  try {
+    const response = await fetch(location.href, {
+      method: "HEAD",
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
+    });
+    // A redirect to the sign-in page ends on a 200; reloading then lands there and is reported from that page.
+    if (response.ok) {
+      saveScroll();
+      location.reload();
+      return;
+    }
+  } catch {
+    // Network error or timeout: the server is unreachable.
+  }
+  dispatch({ type: "reload-failed" });
+}
+
+/**
+ * Whether the document at a board URL failed to load as a board: an HTTP error
+ * status, or a page without GitLab's board markup (for example a 502 page).
+ */
+function boardFailedToLoad(): boolean {
+  const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  if ((navigation?.responseStatus ?? 0) >= 400) return true;
+  return document.querySelector(BOARD_DOCUMENT) === null;
+}
+
+/** Server-rendered markers of a board page (see the GitLab 19.5 board DOM notes). */
+const BOARD_DOCUMENT = [
+  'body[data-page$="boards:index"]',
+  'body[data-page$="boards:show"]',
+  ".boards-app",
+  ".js-focus-mode-board",
+].join(", ");
 
 function saveScroll(): void {
   try {
@@ -134,12 +183,16 @@ async function isActiveTab(): Promise<boolean> {
 async function main(): Promise<void> {
   const settings = await loadSettings();
   const kind = matchBoardPage(location.href, settings.domains);
-  if (!isBoardPage(kind)) {
+  const restored = readPersisted();
+  // The sign-in page in a tab that was refreshing a board means its session expired: report it (red badge).
+  const signedOut = kind === "sign-in" && restored !== null;
+  if (!isBoardPage(kind) && !signedOut) {
     await sendToBackground({ type: "set-badge", badge: null });
     return;
   }
 
-  restoreScroll();
+  const page = signedOut ? "sign-in" : boardFailedToLoad() ? "error" : "board";
+  if (page === "board") restoreScroll();
 
   // Listen before asking, so an activity or pause change during the round trips isn't lost.
   let pendingActive: boolean | undefined;
@@ -164,10 +217,11 @@ async function main(): Promise<void> {
   state = initialSchedulerState({ intervalMs: settings.intervalSeconds * 1000, mode: settings.mode });
   dispatch({
     type: "page-loaded",
+    page,
     focused: document.hasFocus(),
     visible: document.visibilityState === "visible",
     active: pendingActive ?? active,
-    restored: { ...(readPersisted() ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
+    restored: { ...(restored ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
   });
 
   window.addEventListener("focus", () => dispatch({ type: "focus-changed", focused: true }));

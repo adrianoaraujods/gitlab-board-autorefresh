@@ -15,6 +15,7 @@ describe("Board Page Matcher", () => {
     ["subpath group board", "https://example.com/gitlab/groups/my-group/-/boards/3", "group-board"],
     ["sign-in page", "https://gitlab.com/users/sign_in", "sign-in"],
     ["subpath sign-in page", "https://example.com/gitlab/users/sign_in?redirect=1", "sign-in"],
+    ["geo secondary sign-in page", "https://gitlab.com/users/auth/geo/sign_in", "sign-in"],
     ["issue list", "https://gitlab.com/group/project/-/issues", "none"],
     ["single issue", "https://gitlab.com/group/project/-/issues/12", "none"],
     ["merge request", "https://gitlab.com/group/project/-/merge_requests/3", "none"],
