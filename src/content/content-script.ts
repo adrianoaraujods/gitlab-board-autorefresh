@@ -1,12 +1,14 @@
 /**
  * Content Script Adapter (thin, untested glue). Injected on every page of a
  * granted origin; does nothing unless the page is an issue board. Turns window
- * focus/blur, the scheduler timer and settings changes into Refresh Scheduler
- * events, and carries out the commands it returns.
+ * focus/blur, page visibility, tab activity (from the background worker), the
+ * scheduler timer and settings changes into Refresh Scheduler events, and
+ * carries out the commands it returns.
  *
- * Runs the Blocker Detector when the scheduler asks (#4). Later tickets add
- * visibility and tab-activity events (#6), pause (#7) and sign-in/failure
- * handling (#8) here.
+ * It also answers the popup's status query and applies pause toggles (#7);
+ * the background worker owns the pause flag, which is merged into the
+ * restored state on load. It runs the Blocker Detector when the scheduler
+ * asks (#4). Later tickets add sign-in/failure handling (#8) here.
  */
 import { detectBlockers } from "../core/blocker-detector";
 import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
@@ -17,17 +19,30 @@ import {
   type SchedulerCommand,
   type SchedulerEvent,
   type SchedulerState,
+  type SchedulerStatus,
 } from "../core/refresh-scheduler";
-import { sendToBackground } from "../shared/messages";
+import { restoreScrollSnapshot, saveScrollSnapshot } from "../core/scroll-snapshot";
+import {
+  sendToBackground,
+  type PauseReply,
+  type StatusReply,
+  type TabActivityResponse,
+  type ToContentMessage,
+} from "../shared/messages";
 import { loadSettings, onSettingsChanged } from "../shared/settings";
 
 /** sessionStorage is per tab and survives reloads, which is exactly the lifetime we need. */
 const PERSIST_KEY = "gitlab-board-autorefresh:scheduler";
+/** How long a restored board may take to render its lists before the scroll restore gives up. */
+const SCROLL_RESTORE_TIMEOUT_MS = 10_000;
 
-let state: SchedulerState;
+let state: SchedulerState | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
+/** The last status sent to the badge, reported to the popup. */
+let lastStatus: SchedulerStatus | null = null;
 
 function dispatch(event: SchedulerEvent): void {
+  if (state === undefined) return;
   const result = transition(state, event, Date.now());
   state = result.state;
   for (const command of result.commands) run(command);
@@ -36,6 +51,7 @@ function dispatch(event: SchedulerEvent): void {
 function run(command: SchedulerCommand): void {
   switch (command.type) {
     case "reload":
+      saveScroll();
       location.reload();
       return;
     case "schedule-timer":
@@ -53,12 +69,35 @@ function run(command: SchedulerCommand): void {
       // Answer once the current dispatch has finished running its commands.
       queueMicrotask(() => dispatch({ type: "blockers-checked", reasons: [...detectBlockers(document)] }));
       return;
-    case "set-badge":
+    case "set-badge": {
+      const { type: _type, ...status } = command;
+      lastStatus = status;
       void sendToBackground({ type: "set-badge", badge: command.badge });
       return;
+    }
     case "persist":
       writePersisted(command.state);
       return;
+  }
+}
+
+function saveScroll(): void {
+  try {
+    saveScrollSnapshot(document, sessionStorage, { url: location.href, now: Date.now() });
+  } catch {
+    // Storage unavailable or full: reload anyway, the board just starts at the top.
+  }
+}
+
+function restoreScroll(): void {
+  try {
+    void restoreScrollSnapshot(document, sessionStorage, {
+      url: location.href,
+      now: Date.now(),
+      timeoutMs: SCROLL_RESTORE_TIMEOUT_MS,
+    });
+  } catch {
+    // Storage unavailable: nothing to restore.
   }
 }
 
@@ -79,6 +118,24 @@ function writePersisted(persisted: PersistedSchedulerState): void {
   }
 }
 
+async function fetchPaused(): Promise<boolean> {
+  try {
+    const reply = (await sendToBackground({ type: "get-pause" })) as PauseReply | undefined;
+    return reply?.paused === true;
+  } catch {
+    return false;
+  }
+}
+
+async function isActiveTab(): Promise<boolean> {
+  try {
+    const response = (await sendToBackground({ type: "get-tab-activity" })) as TabActivityResponse | undefined;
+    return response?.active ?? true;
+  } catch {
+    return true;
+  }
+}
+
 async function main(): Promise<void> {
   const settings = await loadSettings();
   const kind = matchBoardPage(location.href, settings.domains);
@@ -87,15 +144,46 @@ async function main(): Promise<void> {
     return;
   }
 
-  state = initialSchedulerState({ intervalMs: settings.intervalSeconds * 1000 });
-  dispatch({ type: "page-loaded", focused: document.hasFocus(), restored: readPersisted() });
+  restoreScroll();
+
+  // Listen before asking, so an activity or pause change during the round trips isn't lost.
+  let pendingActive: boolean | undefined;
+  let pendingPaused: boolean | undefined;
+  chrome.runtime.onMessage.addListener((message: ToContentMessage, _sender, sendResponse) => {
+    switch (message.type) {
+      case "tab-activity-changed":
+        if (state === undefined) pendingActive = message.active;
+        else dispatch({ type: "tab-activity-changed", active: message.active });
+        return;
+      case "pause-toggled":
+        if (state === undefined) pendingPaused = message.paused;
+        else dispatch({ type: "pause-toggled", paused: message.paused });
+        return;
+      case "get-status":
+        sendResponse({ status: lastStatus } satisfies StatusReply);
+        return;
+    }
+  });
+  const [active, paused] = await Promise.all([isActiveTab(), fetchPaused()]);
+
+  state = initialSchedulerState({ intervalMs: settings.intervalSeconds * 1000, mode: settings.mode });
+  dispatch({
+    type: "page-loaded",
+    focused: document.hasFocus(),
+    visible: document.visibilityState === "visible",
+    active: pendingActive ?? active,
+    restored: { ...(readPersisted() ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
+  });
 
   window.addEventListener("focus", () => dispatch({ type: "focus-changed", focused: true }));
   window.addEventListener("blur", () => dispatch({ type: "focus-changed", focused: false }));
+  document.addEventListener("visibilitychange", () =>
+    dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
+  );
   onSettingsChanged((keys) => {
-    if (!keys.includes("intervalSeconds")) return;
-    void loadSettings().then(({ intervalSeconds }) =>
-      dispatch({ type: "settings-changed", settings: { intervalMs: intervalSeconds * 1000 } }),
+    if (!keys.includes("intervalSeconds") && !keys.includes("mode")) return;
+    void loadSettings().then(({ intervalSeconds, mode }) =>
+      dispatch({ type: "settings-changed", settings: { intervalMs: intervalSeconds * 1000, mode } }),
     );
   });
 }

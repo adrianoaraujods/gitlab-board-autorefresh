@@ -25,8 +25,15 @@
 import type { BadgeState } from "./badge";
 import type { BlockerReason } from "./blocker-detector";
 
+/**
+ * Which board tabs refresh: only the visible, active tab of each window
+ * ("Current tab", the default), or every board tab ("All tabs").
+ */
+export type TabMode = "current-tab" | "all-tabs";
+
 export interface SchedulerSettings {
   intervalMs: number;
+  mode: TabMode;
 }
 
 /**
@@ -37,10 +44,16 @@ export interface SchedulerSettings {
 export interface PersistedSchedulerState {
   /** Epoch ms of the last reload, or the first load of the tab. */
   lastReloadAt: number | null;
+  /**
+   * Whether the user paused this tab from the popup. Optional so a restored
+   * state without it keeps the current value (the background worker owns the
+   * pause flag and the adapter merges it into `restored`).
+   */
+  paused?: boolean;
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
-export type StatusReason = "focused" | "polling" | "blocked";
+export type StatusReason = "paused" | "focused" | "polling" | "not-current-tab" | "blocked";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -56,6 +69,10 @@ export interface SchedulerState {
   settings: SchedulerSettings;
   /** Whether the board's window has focus. */
   focused: boolean;
+  /** Whether the page is visible (`document.visibilityState`). */
+  visible: boolean;
+  /** Whether the tab is the active tab of its window. */
+  active: boolean;
   persisted: PersistedSchedulerState;
   /**
    * The blocker check for the due reload: `idle` when none is outstanding,
@@ -77,12 +94,19 @@ export type SchedulerEvent =
   | {
       type: "page-loaded";
       focused: boolean;
+      /** Page visibility at load; assumed `true` when left out. */
+      visible?: boolean;
+      /** Whether the tab is active in its window at load; assumed `true` when left out. */
+      active?: boolean;
       /** What the previous page of this tab persisted, or `null` on a fresh tab. */
       restored: PersistedSchedulerState | null;
     }
   | { type: "focus-changed"; focused: boolean }
+  | { type: "visibility-changed"; visible: boolean }
+  | { type: "tab-activity-changed"; active: boolean }
   | { type: "timer-fired" }
   | { type: "settings-changed"; settings: Partial<SchedulerSettings> }
+  | { type: "pause-toggled"; paused: boolean }
   /** The adapter's answer to `check-blockers`: what the Blocker Detector found (empty when nothing blocks). */
   | { type: "blockers-checked"; reasons: readonly BlockerReason[] };
 
@@ -117,6 +141,8 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     phase: "starting",
     settings,
     focused: false,
+    visible: true,
+    active: true,
     persisted: { lastReloadAt: null },
     blockerCheck: "idle",
     blockedAt: null,
@@ -138,13 +164,18 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
         ...state,
         phase: "running",
         focused: event.focused,
+        visible: event.visible ?? true,
+        active: event.active ?? true,
         persisted: { ...state.persisted, ...event.restored, lastReloadAt: event.restored?.lastReloadAt ?? now },
         // A new page has no timer and a fresh badge.
         commanded: { timerDueAt: null, status: null },
       };
     case "focus-changed":
-      // The user is back: whatever blocked the last tick gets a fresh check on the next blur.
-      return { ...state, focused: event.focused, blockedAt: event.focused ? null : state.blockedAt };
+      return { ...state, focused: event.focused };
+    case "visibility-changed":
+      return { ...state, visible: event.visible };
+    case "tab-activity-changed":
+      return { ...state, active: event.active };
     case "timer-fired":
       return { ...state, commanded: { ...state.commanded, timerDueAt: null } };
     case "settings-changed":
@@ -155,15 +186,24 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return event.reasons.length === 0
         ? { ...state, blockerCheck: "clear" }
         : { ...state, blockerCheck: "idle", blockedAt: now };
+    case "pause-toggled":
+      return { ...state, persisted: { ...state.persisted, paused: event.paused } };
   }
 }
 
 // Step 2 ----------------------------------------------------------------------
 
+const haltWhilePaused: HaltRule = (state) => (state.persisted.paused ? { badge: "idle", reason: "paused" } : null);
 const haltWhileFocused: HaltRule = (state) => (state.focused ? { badge: "idle", reason: "focused" } : null);
 
+/** In "Current tab" mode only the visible, active tab of its window refreshes. */
+const haltUnlessCurrentTab: HaltRule = (state) =>
+  state.settings.mode === "current-tab" && !(state.visible && state.active)
+    ? { badge: "idle", reason: "not-current-tab" }
+    : null;
+
 /** Checked in order; the first rule that halts wins. */
-export const HALT_RULES: readonly HaltRule[] = [haltWhileFocused];
+export const HALT_RULES: readonly HaltRule[] = [haltWhilePaused, haltWhileFocused, haltUnlessCurrentTab];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
 const BLOCKED: SchedulerStatus = { badge: "blocked", reason: "blocked" };
@@ -197,7 +237,8 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
     case "due":
       return onDue(state, now);
     case "halted":
-      return sync(state, null, planned.status, now);
+      // Whatever blocked the last tick gets a fresh check as soon as refreshing resumes.
+      return sync({ ...state, blockedAt: null }, null, planned.status, now);
     case "waiting":
       return sync(state, planned.dueAt, planned.status, now);
   }

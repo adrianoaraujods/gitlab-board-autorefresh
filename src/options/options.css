@@ -16,3 +16,6 @@ h2 { font-size: 1.1rem; margin-bottom: 4px; }
 .row input { flex: 1; padding: 4px 6px; }
 .error { color: #cf222e; margin: 4px 0 0; }
 section + section { margin-top: 24px; }
+#mode-fieldset { border: 0; padding: 0; margin: 0; }
+#mode-fieldset legend { padding: 0; margin-bottom: 4px; }
+.choice { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; }

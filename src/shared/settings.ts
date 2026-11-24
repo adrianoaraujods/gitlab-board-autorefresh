@@ -1,25 +1,30 @@
-/**
- * Settings stored in chrome.storage.sync. Later tickets add `mode` (#6) here,
- * with a default in DEFAULT_SETTINGS.
- */
+/** Settings stored in chrome.storage.sync, with defaults in DEFAULT_SETTINGS. */
 import { DEFAULT_INTERVAL_SECONDS, normalizeIntervalSeconds } from "../core/refresh-interval";
+import type { TabMode } from "../core/refresh-scheduler";
 
 export interface Settings {
   /** Configured origins, e.g. "https://gitlab.com". */
   domains: string[];
   /** Refresh interval in whole seconds (default 30, minimum 10). */
   intervalSeconds: number;
+  /** Which board tabs refresh (default "current-tab"). */
+  mode: TabMode;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   domains: ["https://gitlab.com"],
   intervalSeconds: DEFAULT_INTERVAL_SECONDS,
+  mode: "current-tab",
 });
 
 export async function loadSettings(): Promise<Settings> {
   const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
   const settings = { ...DEFAULT_SETTINGS, ...stored } as Settings;
-  return { ...settings, intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds) };
+  return {
+    ...settings,
+    intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds),
+    mode: settings.mode === "all-tabs" ? "all-tabs" : "current-tab",
+  };
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {
