@@ -26,8 +26,9 @@ This is an independent, open-source extension. It is not made, endorsed or suppo
 How it works:
 
 - While the board's window has focus, the board is never reloaded.
-- When you click away (into another window or app), the board reloads every refresh interval
-  (30 seconds by default, minimum 10) until you come back.
+- When you click away (into another window or app), the board is checked for changes every refresh
+  interval (30 seconds by default, minimum 10) with one small request, and reloads only when
+  something on it changed, until you come back.
 - A reload is skipped while you are in the middle of something: the issue sidebar is open, a comment,
   title or description has unsaved text, a modal or dropdown is open, or a card is being dragged.
   It tries again on the next interval.
@@ -53,6 +54,8 @@ Options:
 - Which tabs refresh: "Current tab" (default) refreshes only the visible board tab in each window;
   "All tabs" also refreshes background board tabs.
 - Refresh interval in seconds.
+- Detection: "Smart" (default) reloads only when the board changed; "Always reload" reloads every
+  interval.
 
 Privacy: no data is collected or sent anywhere. Settings are stored with Chrome's sync storage.
 
@@ -76,7 +79,7 @@ up to date, and skips reloads while the user is editing on the board.
 
 ### `storage`
 
-Stores the user's settings (the list of GitLab domains, the refresh mode and the refresh interval) in
+Stores the user's settings (the list of GitLab domains, the refresh mode, the refresh interval and the detection mode) in
 `chrome.storage.sync`, and the per-tab "Pause this tab" state in `chrome.storage.session` for the life of
 the tab. Nothing else is stored.
 
@@ -104,9 +107,10 @@ No. All JavaScript is bundled in the package; the extension loads no remote code
 
 ### Data usage
 
-Tick nothing: the extension does not collect or transmit any user data. Its only network requests are
-reloads of the board page the user already has open (plus a same-origin `HEAD` request to that page
-first, to check the server is reachable), made with the user's existing GitLab session.
+Tick nothing: the extension does not collect or transmit any user data. Its only network requests are a
+small same-origin GraphQL request each interval to check whether the open board changed, reloads of
+the board page the user already has open (plus a same-origin `HEAD` request to that page first, to
+check the server is reachable), all made with the user's existing GitLab session.
 
 Certify the three Limited Use disclosures.
 

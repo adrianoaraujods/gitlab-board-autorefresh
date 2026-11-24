@@ -1,8 +1,8 @@
 # Board Auto-Refresh for GitLab
 
-A Chromium (Manifest V3) extension that reloads GitLab issue boards while their window is unfocused,
-so a board left open on a second monitor stays current, and never reloads while you are using it or
-editing something on it.
+A Chromium (Manifest V3) extension that keeps GitLab issue boards current while their window is unfocused,
+reloading only when the board actually changed, so a board left open on a second monitor stays current without
+flashing for nothing, and never reloads while you are using it or editing something on it.
 
 This is an independent open-source project. It is not an official GitLab product and is not endorsed by
 GitLab Inc.
@@ -11,8 +11,15 @@ GitLab Inc.
 
 - **Focused window: no reloads.** The board only refreshes once you click into another window or app. Opening the
   extension's popup or clicking the address bar doesn't count as leaving the window.
-- **Unfocused: reloads every interval** (30 seconds by default). If the board hasn't been reloaded for longer
-  than the interval, it reloads as soon as you click away; otherwise it waits out the rest of the interval.
+- **Unfocused: checks every interval, reloads only on a change** (30 seconds by default). Each check is one
+  small GraphQL request for the board's lists and the first 20 cards of each list (their order and when they last
+  changed). The board reloads only when something it shows changed: a card added, removed, moved or reordered,
+  a card edited, or a list added, removed, reordered or relabelled (a change further down a long list shows
+  through the list's card count). Collapsing a list doesn't count. If the board hasn't been checked for longer
+  than the interval, it checks as soon as you click away; otherwise it waits out the rest of the interval.
+- **Always reload** (option): reloads every interval like v1, changed or not. If a check's answer isn't what the
+  extension expects (for example after a GitLab upgrade changed the API), or the board URL has no board id
+  (`/-/boards` instead of `/-/boards/<id>`), it reloads like this too.
 - **Never interrupts editing.** A reload is skipped while the issue sidebar is open, a text field has unsaved
   content, a modal or dropdown is open, or a card is being dragged. It retries on the next interval.
 - **Keeps your place.** Filters in the board URL are kept, and the page scroll and each list's scroll are restored.
@@ -25,7 +32,7 @@ GitLab Inc.
 
 | Badge | Meaning |
 | --- | --- |
-| Green | Auto-refresh active: the window is unfocused and the board reloads every interval |
+| Green | Auto-refresh active: the window is unfocused and the board is checked (or reloaded) every interval |
 | Grey | Idle: the window is focused, the tab is paused, or (in "Current tab" mode) it is not the visible tab |
 | None | Not a board page |
 | Yellow | A reload was skipped because you are editing |
@@ -51,7 +58,10 @@ Open the extension's options (from the popup, or **Details → Extension options
 - **Which tabs refresh.**
   - **Current tab** (default): only the visible, active board tab in each window.
   - **All tabs**: background and hidden board tabs refresh too.
-- **Refresh interval:** seconds between reloads, minimum 10.
+- **Refresh interval:** seconds between checks (or reloads), minimum 10.
+- **Detection.**
+  - **Smart** (default): checks for changes with one small request and reloads only when the board changed.
+  - **Always reload**: reloads every interval, changed or not (v1 behaviour).
 
 Settings sync across your Chrome profiles through Chrome sync.
 
@@ -68,6 +78,10 @@ every GitLab origin is an optional permission you grant from the options page.
 
 ## Known limitations
 
+- Smart detection uses the board's id from the URL. A board opened at `/-/boards` (no id) reloads every interval
+  instead; pick the board from the board switcher to get a `/-/boards/<id>` URL.
+- Changes that don't touch the cards' timestamps or the lists, such as recolouring a label in the label settings,
+  aren't detected until the next reload.
 - Focus comes from both the page (DOM focus) and Chrome's focused-window tracking. On Linux under Wayland, how Chrome
   reports window focus depends on the compositor, so check by hand that the board stays idle while focused and
   starts refreshing once you switch to another app.
@@ -92,8 +106,9 @@ the badge is grey while the board's window is focused and green while it is unfo
 
 Unit tests live next to the code (`*.test.ts`) and cover the pure modules: the Refresh Scheduler (timing and policy
 rules, fed event sequences with explicit timestamps), the Blocker Detector (against saved, scrubbed HTML snapshots of
-GitLab 19.5 boards in `src/core/fixtures/`), the Board Page Matcher, domain and interval validation, and the Scroll
-Snapshot. `scripts/lib/*.test.ts` checks the packaging file list and that the store listing justifies exactly the
+GitLab 19.5 boards in `src/core/fixtures/`), the Change Detector (request variables and comparison results, against
+hand-written, scrubbed GraphQL responses modelled on GitLab 19.5 in the same folder), the Board Page Matcher, domain
+and interval validation, and the Scroll Snapshot. `scripts/lib/*.test.ts` checks the packaging file list and that the store listing justifies exactly the
 manifest's permissions.
 
 The content script adapter, background worker, options page and popup are checked by hand against a real GitLab
@@ -101,7 +116,8 @@ instance.
 
 When GitLab changes its board markup, save a snapshot of the new markup as a fixture (remove any instance domains,
 names and data first), add a failing test, and update the selectors in `src/core/blocker-detector.ts` (or the board markers in
-`src/core/board-page-matcher.ts`).
+`src/core/board-page-matcher.ts`). When GitLab changes its GraphQL schema, do the same with a hand-written
+`graphql-*.json` response and update the query in `src/core/change-detector.ts`.
 
 ### Releasing to the Chrome Web Store
 
@@ -117,6 +133,7 @@ names and data first), add a failing test, and update the selectors in `src/core
 | `src/core/refresh-scheduler.ts` | Refresh Scheduler: pure `(state, event, now) → { state, commands }` transition |
 | `src/core/blocker-detector.ts` | Blocker Detector: `(document) → active blocker reasons` |
 | `src/core/board-page-matcher.ts` | Board Page Matcher: board URLs, and board markup in a loaded document |
+| `src/core/change-detector.ts` | Change Detector: board context, fingerprint request, `compare(baseline, response) → result` |
 | `src/core/scroll-snapshot.ts` | Scroll Snapshot |
 | `src/core/domain-origin.ts` | Domain validation (origin only) and match patterns |
 | `src/core/refresh-interval.ts` | Refresh interval validation (default 30s, minimum 10s) |
