@@ -44,7 +44,7 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendRe
   if (tab?.id === undefined) return;
   switch (message.type) {
     case "set-badge":
-      void setTabBadge(tab.id, message.badge);
+      void setTabBadge(tab.id, message.badge, message.count);
       return;
     case "get-tab-activity":
       sendResponse({ active: tab.active } satisfies TabActivityResponse);
