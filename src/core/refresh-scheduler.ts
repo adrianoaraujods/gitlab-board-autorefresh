@@ -20,8 +20,15 @@
  */
 import type { BadgeState } from "./badge";
 
+/**
+ * Which board tabs refresh: only the visible, active tab of each window
+ * ("Current tab", the default), or every board tab ("All tabs").
+ */
+export type TabMode = "current-tab" | "all-tabs";
+
 export interface SchedulerSettings {
   intervalMs: number;
+  mode: TabMode;
 }
 
 /**
@@ -35,7 +42,7 @@ export interface PersistedSchedulerState {
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
-export type StatusReason = "focused" | "polling";
+export type StatusReason = "focused" | "polling" | "not-current-tab";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -51,6 +58,10 @@ export interface SchedulerState {
   settings: SchedulerSettings;
   /** Whether the board's window has focus. */
   focused: boolean;
+  /** Whether the page is visible (`document.visibilityState`). */
+  visible: boolean;
+  /** Whether the tab is the active tab of its window. */
+  active: boolean;
   persisted: PersistedSchedulerState;
   /** What has already been commanded, so `realise` can emit only changes. */
   commanded: {
@@ -64,10 +75,16 @@ export type SchedulerEvent =
   | {
       type: "page-loaded";
       focused: boolean;
+      /** Page visibility at load; assumed `true` when left out. */
+      visible?: boolean;
+      /** Whether the tab is active in its window at load; assumed `true` when left out. */
+      active?: boolean;
       /** What the previous page of this tab persisted, or `null` on a fresh tab. */
       restored: PersistedSchedulerState | null;
     }
   | { type: "focus-changed"; focused: boolean }
+  | { type: "visibility-changed"; visible: boolean }
+  | { type: "tab-activity-changed"; active: boolean }
   | { type: "timer-fired" }
   | { type: "settings-changed"; settings: Partial<SchedulerSettings> };
 
@@ -100,6 +117,8 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     phase: "starting",
     settings,
     focused: false,
+    visible: true,
+    active: true,
     persisted: { lastReloadAt: null },
     commanded: { timerDueAt: null, status: null },
   };
@@ -119,12 +138,18 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
         ...state,
         phase: "running",
         focused: event.focused,
+        visible: event.visible ?? true,
+        active: event.active ?? true,
         persisted: { ...state.persisted, ...event.restored, lastReloadAt: event.restored?.lastReloadAt ?? now },
         // A new page has no timer and a fresh badge.
         commanded: { timerDueAt: null, status: null },
       };
     case "focus-changed":
       return { ...state, focused: event.focused };
+    case "visibility-changed":
+      return { ...state, visible: event.visible };
+    case "tab-activity-changed":
+      return { ...state, active: event.active };
     case "timer-fired":
       return { ...state, commanded: { ...state.commanded, timerDueAt: null } };
     case "settings-changed":
@@ -136,8 +161,14 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
 
 const haltWhileFocused: HaltRule = (state) => (state.focused ? { badge: "idle", reason: "focused" } : null);
 
+/** In "Current tab" mode only the visible, active tab of its window refreshes. */
+const haltUnlessCurrentTab: HaltRule = (state) =>
+  state.settings.mode === "current-tab" && !(state.visible && state.active)
+    ? { badge: "idle", reason: "not-current-tab" }
+    : null;
+
 /** Checked in order; the first rule that halts wins. */
-export const HALT_RULES: readonly HaltRule[] = [haltWhileFocused];
+export const HALT_RULES: readonly HaltRule[] = [haltWhileFocused, haltUnlessCurrentTab];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
 

@@ -39,6 +39,22 @@
           <p id="interval-saved" class="status granted" role="status" hidden>Saved.</p>
         </form>
       </section>
+
+      <section aria-labelledby="mode-heading">
+        <h2 id="mode-heading">Which tabs refresh</h2>
+        <fieldset id="mode-fieldset">
+          <legend class="hint">Board tabs that reload while their window is unfocused.</legend>
+          <label class="choice">
+            <input type="radio" name="mode" value="current-tab" />
+            <span><strong>Current tab</strong>: only the visible, active board tab in each window.</span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="mode" value="all-tabs" />
+            <span><strong>All tabs</strong>: background and hidden board tabs refresh too.</span>
+          </label>
+        </fieldset>
+        <p id="mode-error" class="error" role="alert" hidden></p>
+      </section>
     </main>
     <script src="options.js"></script>
   </body>

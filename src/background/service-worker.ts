@@ -1,12 +1,13 @@
 /**
- * Background Service Worker. Owns the per-tab toolbar badge and the dynamic
- * content-script registrations. Later: active-tab tracking (#6) and per-tab
- * pause state (#7).
+ * Background Service Worker. Owns the per-tab toolbar badge, the dynamic
+ * content-script registrations and active-tab tracking. Later: per-tab pause
+ * state (#7).
  */
-import type { ContentToBackgroundMessage } from "../shared/messages";
+import type { ContentToBackgroundMessage, TabActivityResponse } from "../shared/messages";
 import { onSettingsChanged } from "../shared/settings";
 import { setTabBadge } from "./badge";
 import { syncContentScripts } from "./content-script-registry";
+import { notifyTabActivity } from "./tab-activity";
 
 chrome.runtime.onInstalled.addListener(() => void syncContentScripts());
 chrome.runtime.onStartup.addListener(() => void syncContentScripts());
@@ -16,8 +17,17 @@ onSettingsChanged((keys) => {
   if (keys.includes("domains")) void syncContentScripts();
 });
 
-chrome.runtime.onMessage.addListener((message: ContentToBackgroundMessage, sender) => {
-  const tabId = sender.tab?.id;
-  if (tabId === undefined) return;
-  if (message.type === "set-badge") void setTabBadge(tabId, message.badge);
+chrome.tabs.onActivated.addListener(({ windowId }) => void notifyTabActivity(windowId));
+
+chrome.runtime.onMessage.addListener((message: ContentToBackgroundMessage, sender, sendResponse) => {
+  const tab = sender.tab;
+  if (tab?.id === undefined) return;
+  switch (message.type) {
+    case "set-badge":
+      void setTabBadge(tab.id, message.badge);
+      return;
+    case "get-tab-activity":
+      sendResponse({ active: tab.active } satisfies TabActivityResponse);
+      return;
+  }
 });

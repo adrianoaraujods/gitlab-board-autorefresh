@@ -1,6 +1,6 @@
 /**
- * Options Page. Domain list (add, remove, validate, grant) and refresh
- * interval. Later tickets add the tab mode selector (#6).
+ * Options Page. Domain list (add, remove, validate, grant), refresh interval
+ * and tab mode.
  */
 import { originMatchPattern, parseDomainOrigin } from "../core/domain-origin";
 import { parseIntervalSeconds } from "../core/refresh-interval";
@@ -97,12 +97,34 @@ intervalForm.addEventListener("submit", (event) => {
   );
 });
 
+const modeFieldset = document.querySelector<HTMLFieldSetElement>("#mode-fieldset")!;
+const modeError = document.querySelector<HTMLParagraphElement>("#mode-error")!;
+
+async function renderMode(): Promise<void> {
+  const { mode } = await loadSettings();
+  for (const radio of modeFieldset.querySelectorAll<HTMLInputElement>('input[name="mode"]')) {
+    radio.checked = radio.value === mode;
+  }
+}
+
+modeFieldset.addEventListener("change", (event) => {
+  const radio = event.target as HTMLInputElement;
+  const mode = radio.value === "all-tabs" ? "all-tabs" : "current-tab";
+  modeError.hidden = true;
+  saveSettings({ mode }).catch((error: unknown) => {
+    modeError.textContent = error instanceof Error ? error.message : String(error);
+    modeError.hidden = false;
+    void renderMode();
+  });
+});
+
 onSettingsChanged((keys) => {
   if (keys.includes("domains")) void render();
-void renderInterval();
   if (keys.includes("intervalSeconds")) void renderInterval();
+  if (keys.includes("mode")) void renderMode();
 });
 chrome.permissions.onAdded.addListener(() => void render());
 chrome.permissions.onRemoved.addListener(() => void render());
 void render();
 void renderInterval();
+void renderMode();
