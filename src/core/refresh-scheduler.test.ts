@@ -789,6 +789,7 @@ const UNCHANGED_AT_LOAD = checked({ kind: "unchanged", fingerprint: BOARD_AT_LOA
 const UNCHANGED_LATER = checked({ kind: "unchanged", fingerprint: BOARD_LATER });
 const CHANGED = checked({ kind: "remote", changedCount: 2, fingerprint: BOARD_LATER });
 const INVALID = checked({ kind: "invalid", problem: "GraphQL errors" });
+const SIGNED_OUT = checked({ kind: "signed-out" });
 const CHECK_FAILED: SchedulerEvent = { type: "changes-checked", reachable: false };
 
 function smartScheduler() {
@@ -944,6 +945,115 @@ describe("Refresh Scheduler: smart detection", () => {
     const s = smartScheduler();
     s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0);
     expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
+  });
+
+  describe("when detection is unavailable", () => {
+    /** A smart tab whose due check at T0 + INTERVAL found an invalid response and reloaded. */
+    function degradedAfterReload() {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(INVALID, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      return { s, commands: s.send(REACHABLE, T0 + INTERVAL) };
+    }
+
+    it("remembers it across the reload", () => {
+      expect(degradedAfterReload().commands).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + INTERVAL, baseline: BOARD_AT_LOAD, degraded: true } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("keeps checking, and reloads blindly while checks stay invalid", () => {
+      const s = smartScheduler();
+      const restored = { lastReloadAt: T0, degraded: true };
+      s.send({ type: "page-loaded", focused: false, restored }, T0);
+      s.send(INVALID, T0);
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-changes", baseline: null }]);
+      expect(s.send(INVALID, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual(CHECK_REACHABILITY);
+      expect(s.send(REACHABLE, T0 + INTERVAL)).toContainEqual({ type: "reload" });
+    });
+
+    it("shows the reason in the badge status while waiting", () => {
+      const s = smartScheduler();
+      const restored = { lastReloadAt: T0, degraded: true };
+      expect(s.send({ type: "page-loaded", focused: false, restored }, T0)).toContainEqual({
+        type: "set-badge",
+        badge: "polling",
+        reason: "detection-unavailable",
+      });
+    });
+
+    it("returns to smart behaviour once a check is valid again", () => {
+      const s = smartScheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, degraded: true } }, T0);
+      s.send(INVALID, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      // A valid answer: no blind reload, and the status is back to plain polling.
+      expect(s.send(UNCHANGED_AT_LOAD, T0 + INTERVAL)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-changes", baseline: BOARD_AT_LOAD }]);
+    });
+
+    it("recovers from a valid baseline check on the next page too", () => {
+      const s = smartScheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, degraded: true } }, T0);
+      s.send(UNCHANGED_AT_LOAD, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([]);
+    });
+
+    it("doesn't affect Always reload", () => {
+      const s = scheduler(INTERVAL, "current-tab", "always-reload");
+      expect(
+        s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, degraded: true } }, T0),
+      ).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+    });
+  });
+
+  describe("when the session has expired", () => {
+    it("halts with the signed-out badge instead of reloading", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send(SIGNED_OUT, T0 + INTERVAL)).toEqual([
+        { type: "set-badge", badge: "error", reason: "signed-out" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * INTERVAL)).toEqual([]);
+    });
+
+    it("halts when the baseline check finds it", () => {
+      const s = smartScheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0);
+      expect(s.send(SIGNED_OUT, T0)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "error", reason: "signed-out" },
+      ]);
+    });
+  });
+
+  describe("when the check request fails", () => {
+    it("shows the red badge and doubles the wait once the server proves unreachable", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHECK_FAILED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      expect(s.send(UNREACHABLE, T0 + INTERVAL)).toContainEqual({ type: "set-badge", badge: "error", reason: "reload-failed" });
+    });
+
+    it("doesn't mark detection as unavailable", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHECK_FAILED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      const commands = s.send(REACHABLE, T0 + INTERVAL);
+      expect(JSON.stringify(commands)).not.toContain("degraded");
+    });
   });
 
   describe("when the detection setting changes", () => {

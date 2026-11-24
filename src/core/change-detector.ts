@@ -151,11 +151,14 @@ export interface BoardFingerprint {
  * response, to become the next baseline once the caller has acted on it.
  * `remote.changedCount` is the number of cards added, removed or changed, and
  * at least 1 when only the lists changed. `invalid` means the response wasn't
- * the expected shape (GraphQL errors, a missing field, no board).
+ * the expected shape (GraphQL errors, a missing field). `signed-out` means
+ * GitLab answered with a null project, group or board: an expired session
+ * queries as anonymous and gets nulls instead of a 401.
  */
 export type ChangeDetection =
   | { kind: "unchanged"; fingerprint: BoardFingerprint }
   | { kind: "remote"; changedCount: number; fingerprint: BoardFingerprint }
+  | { kind: "signed-out" }
   | { kind: "invalid"; problem: string };
 
 /**
@@ -165,6 +168,7 @@ export type ChangeDetection =
  */
 export function compare(baseline: BoardFingerprint | null, response: unknown): ChangeDetection {
   const read = readFingerprint(response);
+  if (read === SIGNED_OUT) return { kind: "signed-out" };
   if (typeof read === "string") return { kind: "invalid", problem: read };
   if (baseline === null) return { kind: "unchanged", fingerprint: read };
   const changedCards = countChangedCards(baseline.cards, read.cards);
@@ -190,13 +194,16 @@ function isObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The response's fingerprint, or what is wrong with it. */
-function readFingerprint(response: unknown): BoardFingerprint | string {
+const SIGNED_OUT = Symbol("signed-out");
+
+/** The response's fingerprint, what is wrong with it, or `SIGNED_OUT`. */
+function readFingerprint(response: unknown): BoardFingerprint | string | typeof SIGNED_OUT {
   if (!isObject(response)) return "response is not a JSON object";
   if (Array.isArray(response.errors) && response.errors.length > 0) return "GraphQL errors";
   const { data } = response;
   if (!isObject(data)) return "no data";
-  const parent = data.project ?? data.group;
+  const parent = data.project !== undefined ? data.project : data.group;
+  if (parent === null || (isObject(parent) && parent.board === null)) return SIGNED_OUT;
   if (!isObject(parent) || !isObject(parent.board)) return "no board";
   const lists = parent.board.lists;
   if (!isObject(lists) || !Array.isArray(lists.nodes)) return "no lists";

@@ -32,7 +32,9 @@
  * `applyEvent`; add input fields to `SchedulerState`; add a halt rule to
  * `HALT_RULES`; adjust `nextDueAt` (backoff). Add commands to
  * `SchedulerCommand`. New detection results (#13–#15) are handled in
- * `changesChecked`; a different way to apply a change (#17) replaces the
+ * `changesChecked`. Detection resilience (#13): `invalid` marks the tab
+ * `degraded` (reloads like v1, checks go on, a valid answer recovers),
+ * `signed-out` halts like the sign-in page; a different way to apply a change (#17) replaces the
  * `reload` step of `dueStep`.
  */
 import type { BadgeState } from "./badge";
@@ -91,6 +93,12 @@ export interface PersistedSchedulerState {
    * a fresh one, since the reloaded page shows the board as it is now.
    */
   baseline?: BoardFingerprint;
+  /**
+   * Smart detection got a response it can't read (#13): the tab reloads like
+   * "Always reload" while checks go on, until one is valid again. Absent
+   * means detection works.
+   */
+  degraded?: boolean;
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
@@ -101,7 +109,9 @@ export type StatusReason =
   | "not-current-tab"
   | "blocked"
   | "signed-out"
-  | "reload-failed";
+  | "reload-failed"
+  /** Smart detection is degraded (#13): the board reloads on every interval. */
+  | "detection-unavailable";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -371,20 +381,28 @@ function changesChecked(
   const detection = event.reachable ? event.detection : null;
   if (state.baselinePending) {
     // Only taking the baseline: no timing or reload decision hangs on it.
-    const taken = detection !== null && detection.kind !== "invalid";
-    const persisted = taken ? { ...state.persisted, baseline: detection.fingerprint } : state.persisted;
-    return { ...state, baselinePending: false, persisted };
+    const next = { ...state, baselinePending: false };
+    if (detection?.kind === "signed-out") return { ...next, signedOut: true };
+    if (detection === null) return next;
+    if (detection.kind === "invalid") return { ...next, persisted: { ...state.persisted, degraded: true } };
+    return { ...next, persisted: withoutDegraded({ ...state.persisted, baseline: detection.fingerprint }) };
   }
   if (state.reloadCheck !== "changes-pending") return state;
   switch (detection?.kind) {
+    case "signed-out":
+      // Halts like the sign-in page: never a change, never a reload.
+      return { ...state, reloadCheck: "idle", signedOut: true };
     case "unchanged": {
       // The server answered, so earlier failures are over; the next check is an interval from now.
-      const persisted = withFailures({ ...state.persisted, baseline: detection.fingerprint }, 0);
+      const persisted = withFailures(withoutDegraded({ ...state.persisted, baseline: detection.fingerprint }), 0);
       return { ...state, reloadCheck: "idle", lastCheckAt: now, blocked: null, persisted };
     }
     case "remote":
       // Keep the old baseline: if the reload is blocked, the next check still sees the change.
-      return { ...state, reloadCheck: "changed", persisted: withFailures(state.persisted, 0) };
+      return { ...state, reloadCheck: "changed", persisted: withFailures(withoutDegraded(state.persisted), 0) };
+    case "invalid":
+      // Degraded: reload like v1 now and on later ticks, checking each time until a response is valid.
+      return { ...state, reloadCheck: "changed", persisted: { ...state.persisted, degraded: true } };
     default:
       // A failed request or a response detection can't read: reload like v1. A failed
       // request then fails the reachability check too, and backs off.
@@ -394,6 +412,11 @@ function changesChecked(
 
 function blockedBy(state: SchedulerState, reasons: readonly BlockerReason[], now: number): SchedulerState {
   return { ...state, reloadCheck: "idle", blocked: { at: now, reasons: [...reasons] } };
+}
+
+function withoutDegraded(persisted: PersistedSchedulerState): PersistedSchedulerState {
+  const { degraded: _dropped, ...rest } = persisted;
+  return rest;
 }
 
 function failures(state: SchedulerState): number {
@@ -440,7 +463,8 @@ export function plan(state: SchedulerState, now: number): Plan {
 /** A skipped (blocked) tick shows yellow until the next check, even while failures back off; otherwise failing reloads show red. */
 function waitingStatus(state: SchedulerState): SchedulerStatus {
   if (state.blocked !== null) return { badge: "blocked", reason: "blocked", blockers: state.blocked.reasons };
-  return failures(state) > 0 ? FAILING : POLLING;
+  if (failures(state) > 0) return FAILING;
+  return state.persisted.degraded && detecting(state) ? { badge: "polling", reason: "detection-unavailable" } : POLLING;
 }
 
 /** A failing tab that stops for focus or tab activity keeps its red badge until a board loads; a pause still shows. */
