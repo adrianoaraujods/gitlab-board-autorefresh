@@ -247,8 +247,8 @@ const haltUnlessCurrentTab: HaltRule = (state) =>
 
 const haltWhenSignedOut: HaltRule = (state) => (state.signedOut ? { badge: "error", reason: "signed-out" } : null);
 
-/** Checked in order; the first rule that halts wins. */
-export const HALT_RULES: readonly HaltRule[] = [haltWhenSignedOut, haltWhilePaused, haltWhileFocused, haltUnlessCurrentTab];
+/** Checked in order; the first rule that halts wins. A paused tab is idle regardless of other inputs (spec #1). */
+export const HALT_RULES: readonly HaltRule[] = [haltWhilePaused, haltWhenSignedOut, haltWhileFocused, haltUnlessCurrentTab];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
 const BLOCKED: SchedulerStatus = { badge: "blocked", reason: "blocked" };

@@ -580,14 +580,22 @@ describe("Refresh Scheduler: session loss and failures", () => {
       expect(s.send({ type: "focus-changed", focused: false }, T0 + 12 * MINUTE)).toEqual([]);
     });
 
-    it("shows signed-out even on a paused tab", () => {
+    it("shows paused rather than signed-out on a paused tab", () => {
       const s = scheduler();
       expect(
         s.send(
           { type: "page-loaded", page: "sign-in", focused: false, restored: { lastReloadAt: T0, paused: true } },
           T0 + SECOND,
         ),
-      ).toEqual([{ type: "set-badge", badge: "error", reason: "signed-out" }]);
+      ).toEqual([{ type: "set-badge", badge: "idle", reason: "paused" }]);
+    });
+
+    it("shows signed-out again when a signed-out tab is unpaused", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", page: "sign-in", focused: false, restored: { lastReloadAt: T0, paused: true } }, T0 + SECOND);
+      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 2 * SECOND)).toEqual([
+        { type: "set-badge", badge: "error", reason: "signed-out" },
+      ]);
     });
 
     it("starts refreshing again once a board loads after signing in", () => {
