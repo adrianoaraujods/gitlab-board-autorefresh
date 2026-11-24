@@ -20,6 +20,7 @@ import {
   type SchedulerState,
   type SchedulerStatus,
 } from "../core/refresh-scheduler";
+import { restoreScrollSnapshot, saveScrollSnapshot } from "../core/scroll-snapshot";
 import {
   sendToBackground,
   type PauseReply,
@@ -31,6 +32,8 @@ import { loadSettings, onSettingsChanged } from "../shared/settings";
 
 /** sessionStorage is per tab and survives reloads, which is exactly the lifetime we need. */
 const PERSIST_KEY = "gitlab-board-autorefresh:scheduler";
+/** How long a restored board may take to render its lists before the scroll restore gives up. */
+const SCROLL_RESTORE_TIMEOUT_MS = 10_000;
 
 let state: SchedulerState | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -47,6 +50,7 @@ function dispatch(event: SchedulerEvent): void {
 function run(command: SchedulerCommand): void {
   switch (command.type) {
     case "reload":
+      saveScroll();
       location.reload();
       return;
     case "schedule-timer":
@@ -69,6 +73,26 @@ function run(command: SchedulerCommand): void {
     case "persist":
       writePersisted(command.state);
       return;
+  }
+}
+
+function saveScroll(): void {
+  try {
+    saveScrollSnapshot(document, sessionStorage, { url: location.href, now: Date.now() });
+  } catch {
+    // Storage unavailable or full: reload anyway, the board just starts at the top.
+  }
+}
+
+function restoreScroll(): void {
+  try {
+    void restoreScrollSnapshot(document, sessionStorage, {
+      url: location.href,
+      now: Date.now(),
+      timeoutMs: SCROLL_RESTORE_TIMEOUT_MS,
+    });
+  } catch {
+    // Storage unavailable: nothing to restore.
   }
 }
 
@@ -114,6 +138,8 @@ async function main(): Promise<void> {
     await sendToBackground({ type: "set-badge", badge: null });
     return;
   }
+
+  restoreScroll();
 
   // Listen before asking, so an activity or pause change during the round trips isn't lost.
   let pendingActive: boolean | undefined;
