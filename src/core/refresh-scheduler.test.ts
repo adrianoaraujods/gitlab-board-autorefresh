@@ -14,6 +14,14 @@ const INTERVAL = 30 * SECOND;
 /** An arbitrary wall-clock start, so tests never depend on `now` being 0. */
 const T0 = 1_700_000_000_000;
 
+/** The adapter's answer when the Blocker Detector finds nothing in the way. */
+const NOTHING_BLOCKING: SchedulerEvent = { type: "blockers-checked", reasons: [] };
+
+/** The commands that reload the page, recording `at` as the last reload. */
+function reloadAt(at: number): SchedulerCommand[] {
+  return [{ type: "persist", state: { lastReloadAt: at } }, { type: "reload" }];
+}
+
 /**
  * Feeds events into the scheduler one at a time, threading state through, and
  * returns the commands each event produced. Tests only look at commands.
@@ -44,9 +52,9 @@ describe("Refresh Scheduler", () => {
       const s = scheduler();
       s.send({ type: "page-loaded", focused: true, restored: null }, T0);
       expect(s.send({ type: "focus-changed", focused: false }, T0 + 5 * 60 * SECOND)).toEqual([
-        { type: "persist", state: { lastReloadAt: T0 + 5 * 60 * SECOND } },
-        { type: "reload" },
+        { type: "check-blockers" },
       ]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 5 * 60 * SECOND)).toEqual(reloadAt(T0 + 5 * 60 * SECOND));
     });
 
     it("waits out the rest of the interval if the last reload was recent", () => {
@@ -64,10 +72,8 @@ describe("Refresh Scheduler", () => {
       const s = scheduler();
       s.send({ type: "page-loaded", focused: true, restored: null }, T0);
       s.send({ type: "focus-changed", focused: false }, T0 + 12 * SECOND);
-      expect(s.send({ type: "timer-fired" }, T0 + 30 * SECOND)).toEqual([
-        { type: "persist", state: { lastReloadAt: T0 + 30 * SECOND } },
-        { type: "reload" },
-      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 30 * SECOND)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 30 * SECOND)).toEqual(reloadAt(T0 + 30 * SECOND));
     });
 
     it("keeps reloading every interval across page reloads, timed from the last reload", () => {
@@ -77,10 +83,8 @@ describe("Refresh Scheduler", () => {
         { type: "schedule-timer", delayMs: 28 * SECOND },
         { type: "set-badge", badge: "polling", reason: "polling" },
       ]);
-      expect(s.send({ type: "timer-fired" }, T0 + 30 * SECOND)).toEqual([
-        { type: "persist", state: { lastReloadAt: T0 + 30 * SECOND } },
-        { type: "reload" },
-      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 30 * SECOND)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 30 * SECOND)).toEqual(reloadAt(T0 + 30 * SECOND));
 
       const next = scheduler();
       expect(
@@ -94,9 +98,9 @@ describe("Refresh Scheduler", () => {
     it("reloads straight away when a page loads unfocused long after the last reload", () => {
       const s = scheduler();
       expect(s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + 45 * SECOND)).toEqual([
-        { type: "persist", state: { lastReloadAt: T0 + 45 * SECOND } },
-        { type: "reload" },
+        { type: "check-blockers" },
       ]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 45 * SECOND)).toEqual(reloadAt(T0 + 45 * SECOND));
     });
 
     it("counts a fresh tab's first load as its last reload", () => {
@@ -116,8 +120,71 @@ describe("Refresh Scheduler", () => {
     it("emits nothing after a reload until the next page loads", () => {
       const s = scheduler();
       s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + 45 * SECOND);
+      s.send(NOTHING_BLOCKING, T0 + 45 * SECOND);
       expect(s.send({ type: "focus-changed", focused: true }, T0 + 46 * SECOND)).toEqual([]);
       expect(s.send({ type: "timer-fired" }, T0 + 90 * SECOND)).toEqual([]);
+    });
+  });
+
+  describe("before each reload", () => {
+    it("skips the reload while something blocks it, turns the badge yellow and tries again an interval later", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send({ type: "blockers-checked", reasons: ["unsaved-input"] }, T0 + INTERVAL)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "blocked", reason: "blocked" },
+      ]);
+    });
+
+    it("reloads on a later tick once nothing blocks any more", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send({ type: "blockers-checked", reasons: ["sidebar-open"] }, T0 + INTERVAL);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send({ type: "blockers-checked", reasons: ["sidebar-open"] }, T0 + 2 * INTERVAL)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 3 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 3 * INTERVAL)).toEqual(reloadAt(T0 + 3 * INTERVAL));
+    });
+
+    it("checks again right away when the window loses focus after the user came back", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send({ type: "blockers-checked", reasons: ["unsaved-input"] }, T0 + INTERVAL);
+      expect(s.send({ type: "focus-changed", focused: true }, T0 + INTERVAL + 5 * SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "focused" },
+      ]);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + INTERVAL + 9 * SECOND)).toEqual([
+        { type: "check-blockers" },
+      ]);
+    });
+
+    it("checks again right away when a blocked tab is hidden and shown again", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send({ type: "blockers-checked", reasons: ["overlay-open"] }, T0 + INTERVAL);
+      s.send({ type: "visibility-changed", visible: false }, T0 + INTERVAL + SECOND);
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + INTERVAL + 2 * SECOND)).toEqual([
+        { type: "check-blockers" },
+      ]);
+    });
+
+    it("ignores a check that answers after the window regained focus", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send({ type: "focus-changed", focused: true }, T0 + INTERVAL);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual([]);
+      // The next blur runs a fresh check rather than reusing the stale answer.
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + INTERVAL + SECOND)).toEqual([
+        { type: "check-blockers" },
+      ]);
     });
   });
 
@@ -153,9 +220,9 @@ describe("Refresh Scheduler", () => {
       s.send({ type: "page-loaded", focused: false, restored: null }, T0);
       expect(s.send({ type: "settings-changed", settings: { intervalMs: 10 * SECOND } }, T0 + 15 * SECOND)).toEqual([
         { type: "cancel-timer" },
-        { type: "persist", state: { lastReloadAt: T0 + 15 * SECOND } },
-        { type: "reload" },
+        { type: "check-blockers" },
       ]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 15 * SECOND)).toEqual(reloadAt(T0 + 15 * SECOND));
     });
 
     it("uses the new interval on the next blur when changed while focused", () => {
@@ -200,7 +267,8 @@ describe("Refresh Scheduler", () => {
     it("reloads right away when a hidden tab becomes visible after the interval has passed", () => {
       const s = scheduler();
       s.send({ type: "page-loaded", focused: false, visible: false, active: true, restored: null }, T0);
-      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 2 * 60 * SECOND)).toEqual([
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 2 * 60 * SECOND)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 2 * 60 * SECOND)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + 2 * 60 * SECOND } },
         { type: "reload" },
       ]);
@@ -219,7 +287,8 @@ describe("Refresh Scheduler", () => {
       const s = scheduler();
       s.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0);
       expect(s.send({ type: "tab-activity-changed", active: true }, T0 + 2 * 60 * SECOND)).toEqual([]);
-      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 2 * 60 * SECOND)).toEqual([
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 2 * 60 * SECOND)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 2 * 60 * SECOND)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + 2 * 60 * SECOND } },
         { type: "reload" },
       ]);
@@ -240,7 +309,8 @@ describe("Refresh Scheduler", () => {
         { type: "schedule-timer", delayMs: INTERVAL },
         { type: "set-badge", badge: "polling", reason: "polling" },
       ]);
-      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + INTERVAL } },
         { type: "reload" },
       ]);
@@ -251,7 +321,8 @@ describe("Refresh Scheduler", () => {
       s.send({ type: "page-loaded", focused: false, restored: null }, T0);
       expect(s.send({ type: "tab-activity-changed", active: false }, T0 + 5 * SECOND)).toEqual([]);
       expect(s.send({ type: "visibility-changed", visible: false }, T0 + 5 * SECOND)).toEqual([]);
-      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + INTERVAL } },
         { type: "reload" },
       ]);
@@ -285,7 +356,8 @@ describe("Refresh Scheduler", () => {
 
       const late = scheduler();
       late.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0);
-      expect(late.send({ type: "settings-changed", settings: { mode: "all-tabs" } }, T0 + 2 * 60 * SECOND)).toEqual([
+      expect(late.send({ type: "settings-changed", settings: { mode: "all-tabs" } }, T0 + 2 * 60 * SECOND)).toEqual([{ type: "check-blockers" }]);
+      expect(late.send(NOTHING_BLOCKING, T0 + 2 * 60 * SECOND)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + 2 * 60 * SECOND } },
         { type: "reload" },
       ]);
@@ -355,7 +427,8 @@ describe("Refresh Scheduler", () => {
       const s = scheduler();
       s.send({ type: "page-loaded", focused: false, restored: null }, T0);
       s.send({ type: "pause-toggled", paused: true }, T0 + 5 * SECOND);
-      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 5 * 60 * SECOND)).toEqual([
+      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 5 * 60 * SECOND)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 5 * 60 * SECOND)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + 5 * 60 * SECOND, paused: false } },
         { type: "reload" },
       ]);
@@ -400,7 +473,8 @@ describe("Refresh Scheduler: session loss and failures", () => {
         if (timer?.type !== "schedule-timer") throw new Error("expected a timer");
         delays.push(timer.delayMs);
         at += timer.delayMs;
-        const reload = s.send({ type: "timer-fired" }, at);
+        expect(s.send({ type: "timer-fired" }, at)).toEqual([{ type: "check-blockers" }]);
+        const reload = s.send(NOTHING_BLOCKING, at);
         const persisted = reload.find((c) => c.type === "persist");
         if (persisted?.type !== "persist") throw new Error("expected a persist");
         restored = persisted.state;
@@ -427,21 +501,23 @@ describe("Refresh Scheduler: session loss and failures", () => {
         { type: "schedule-timer", delayMs: INTERVAL - SECOND },
         { type: "set-badge", badge: "polling", reason: "polling" },
       ]);
-      expect(s.send({ type: "timer-fired" }, failedAt + INTERVAL)).toEqual([
-        { type: "persist", state: { lastReloadAt: failedAt + INTERVAL } },
-        { type: "reload" },
-      ]);
+      expect(s.send({ type: "timer-fired" }, failedAt + INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, failedAt + INTERVAL)).toEqual(reloadAt(failedAt + INTERVAL));
     });
 
     it("retries after the backoff when the reload could not even start", () => {
       const s = scheduler();
-      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + 45 * SECOND);
+      expect(s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + 45 * SECOND)).toEqual([
+        { type: "check-blockers" },
+      ]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 45 * SECOND)).toEqual(reloadAt(T0 + 45 * SECOND));
       expect(s.send({ type: "reload-failed" }, T0 + 46 * SECOND)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + 45 * SECOND, consecutiveFailures: 1 } },
         { type: "schedule-timer", delayMs: 2 * INTERVAL - SECOND },
         { type: "set-badge", badge: "error", reason: "reload-failed" },
       ]);
-      expect(s.send({ type: "timer-fired" }, T0 + 45 * SECOND + 2 * INTERVAL)).toEqual([
+      expect(s.send({ type: "timer-fired" }, T0 + 45 * SECOND + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + 45 * SECOND + 2 * INTERVAL)).toEqual([
         { type: "persist", state: { lastReloadAt: T0 + 45 * SECOND + 2 * INTERVAL, consecutiveFailures: 1 } },
         { type: "reload" },
       ]);
@@ -521,10 +597,34 @@ describe("Refresh Scheduler: session loss and failures", () => {
       const board = scheduler();
       expect(
         board.send({ type: "page-loaded", page: "board", focused: false, restored: { lastReloadAt: T0 } }, T0 + 2 * MINUTE),
-      ).toEqual([
-        { type: "persist", state: { lastReloadAt: T0 + 2 * MINUTE } },
-        { type: "reload" },
-      ]);
+      ).toEqual([{ type: "check-blockers" }]);
+      expect(board.send(NOTHING_BLOCKING, T0 + 2 * MINUTE)).toEqual(reloadAt(T0 + 2 * MINUTE));
     });
+  });
+});
+
+describe("Refresh Scheduler: blockers together with failures", () => {
+  it("never asks for a blocker check on the sign-in page", () => {
+    const s = scheduler();
+    expect(
+      s.send({ type: "page-loaded", page: "sign-in", focused: false, restored: { lastReloadAt: T0 } }, T0 + 10 * INTERVAL),
+    ).toEqual([{ type: "set-badge", badge: "error", reason: "signed-out" }]);
+  });
+
+  it("checks for blockers again before retrying a reload that could not start", () => {
+    const s = scheduler();
+    s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + INTERVAL);
+    s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+    s.send({ type: "reload-failed" }, T0 + INTERVAL + SECOND);
+    expect(s.send({ type: "timer-fired" }, T0 + 3 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
+  });
+
+  it("keeps the badge red when a retry is blocked, and tries again one interval later", () => {
+    const s = scheduler();
+    s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0);
+    expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
+    expect(s.send({ type: "blockers-checked", reasons: ["unsaved-input"] }, T0 + 2 * INTERVAL)).toEqual([
+      { type: "schedule-timer", delayMs: INTERVAL },
+    ]);
   });
 });

@@ -19,6 +19,7 @@ const REASON_TEXT: Record<string, string> = {
   focused: "The window has focus, so the board won't reload.",
   polling: "The window is unfocused; the board reloads on schedule.",
   "not-current-tab": "Only the visible tab of each window refreshes (\"Current tab\" mode).",
+  blocked: "You're in the middle of something on the board (sidebar, unsaved text, a dropdown or a drag); the reload waits for the next tick.",
   "signed-out": "Signed out of GitLab, so auto-refresh stopped. Sign in again to resume.",
   "reload-failed": "Reloads are failing (server unreachable or an error page); retrying with backoff up to 5 minutes.",
 };

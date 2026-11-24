@@ -17,8 +17,11 @@
  * content script runs, so each reload is preceded by a cheap HEAD request; if
  * that fails the page stays and `reload-failed` is reported instead.
  *
- * A later ticket adds the blocker check (#4) here.
+ * It runs the Blocker Detector when the scheduler asks (#4). On a due tick
+ * the order is: blocker check → (if clear) HEAD reachability check → save the
+ * scroll snapshot → reload.
  */
+import { detectBlockers } from "../core/blocker-detector";
 import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
 import {
   initialSchedulerState,
@@ -71,6 +74,10 @@ function run(command: SchedulerCommand): void {
     case "cancel-timer":
       clearTimeout(timer);
       timer = undefined;
+      return;
+    case "check-blockers":
+      // Answer once the current dispatch has finished running its commands.
+      queueMicrotask(() => dispatch({ type: "blockers-checked", reasons: [...detectBlockers(document)] }));
       return;
     case "set-badge": {
       const { type: _type, ...status } = command;
