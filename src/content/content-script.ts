@@ -5,8 +5,10 @@
  * scheduler timer and settings changes into Refresh Scheduler events, and
  * carries out the commands it returns.
  *
- * Later tickets add the blocker check (#4), pause (#7) and sign-in/failure
- * handling (#8) here.
+ * It also answers the popup's status query and applies pause toggles (#7);
+ * the background worker owns the pause flag, which is merged into the
+ * restored state on load. Later tickets add the blocker check (#4) and
+ * sign-in/failure handling (#8) here.
  */
 import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
 import {
@@ -16,8 +18,15 @@ import {
   type SchedulerCommand,
   type SchedulerEvent,
   type SchedulerState,
+  type SchedulerStatus,
 } from "../core/refresh-scheduler";
-import { sendToBackground, type BackgroundToContentMessage, type TabActivityResponse } from "../shared/messages";
+import {
+  sendToBackground,
+  type PauseReply,
+  type StatusReply,
+  type TabActivityResponse,
+  type ToContentMessage,
+} from "../shared/messages";
 import { loadSettings, onSettingsChanged } from "../shared/settings";
 
 /** sessionStorage is per tab and survives reloads, which is exactly the lifetime we need. */
@@ -25,6 +34,8 @@ const PERSIST_KEY = "gitlab-board-autorefresh:scheduler";
 
 let state: SchedulerState | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
+/** The last status sent to the badge, reported to the popup. */
+let lastStatus: SchedulerStatus | null = null;
 
 function dispatch(event: SchedulerEvent): void {
   if (state === undefined) return;
@@ -49,9 +60,12 @@ function run(command: SchedulerCommand): void {
       clearTimeout(timer);
       timer = undefined;
       return;
-    case "set-badge":
+    case "set-badge": {
+      const { type: _type, ...status } = command;
+      lastStatus = status;
       void sendToBackground({ type: "set-badge", badge: command.badge });
       return;
+    }
     case "persist":
       writePersisted(command.state);
       return;
@@ -75,6 +89,15 @@ function writePersisted(persisted: PersistedSchedulerState): void {
   }
 }
 
+async function fetchPaused(): Promise<boolean> {
+  try {
+    const reply = (await sendToBackground({ type: "get-pause" })) as PauseReply | undefined;
+    return reply?.paused === true;
+  } catch {
+    return false;
+  }
+}
+
 async function isActiveTab(): Promise<boolean> {
   try {
     const response = (await sendToBackground({ type: "get-tab-activity" })) as TabActivityResponse | undefined;
@@ -92,14 +115,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Listen before asking, so an activity change during the round trip isn't lost.
+  // Listen before asking, so an activity or pause change during the round trips isn't lost.
   let pendingActive: boolean | undefined;
-  chrome.runtime.onMessage.addListener((message: BackgroundToContentMessage) => {
-    if (message.type !== "tab-activity-changed") return;
-    if (state === undefined) pendingActive = message.active;
-    else dispatch({ type: "tab-activity-changed", active: message.active });
+  let pendingPaused: boolean | undefined;
+  chrome.runtime.onMessage.addListener((message: ToContentMessage, _sender, sendResponse) => {
+    switch (message.type) {
+      case "tab-activity-changed":
+        if (state === undefined) pendingActive = message.active;
+        else dispatch({ type: "tab-activity-changed", active: message.active });
+        return;
+      case "pause-toggled":
+        if (state === undefined) pendingPaused = message.paused;
+        else dispatch({ type: "pause-toggled", paused: message.paused });
+        return;
+      case "get-status":
+        sendResponse({ status: lastStatus } satisfies StatusReply);
+        return;
+    }
   });
-  const active = await isActiveTab();
+  const [active, paused] = await Promise.all([isActiveTab(), fetchPaused()]);
 
   state = initialSchedulerState({ intervalMs: settings.intervalSeconds * 1000, mode: settings.mode });
   dispatch({
@@ -107,7 +141,7 @@ async function main(): Promise<void> {
     focused: document.hasFocus(),
     visible: document.visibilityState === "visible",
     active: pendingActive ?? active,
-    restored: readPersisted(),
+    restored: { ...(readPersisted() ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
   });
 
   window.addEventListener("focus", () => dispatch({ type: "focus-changed", focused: true }));

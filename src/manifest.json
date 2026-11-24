@@ -11,7 +11,8 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Board Auto-Refresh for GitLab"
+    "default_title": "Board Auto-Refresh for GitLab",
+    "default_popup": "popup.html"
   },
   "options_ui": {
     "page": "options.html",

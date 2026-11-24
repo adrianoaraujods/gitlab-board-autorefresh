@@ -39,10 +39,16 @@ export interface SchedulerSettings {
 export interface PersistedSchedulerState {
   /** Epoch ms of the last reload, or the first load of the tab. */
   lastReloadAt: number | null;
+  /**
+   * Whether the user paused this tab from the popup. Optional so a restored
+   * state without it keeps the current value (the background worker owns the
+   * pause flag and the adapter merges it into `restored`).
+   */
+  paused?: boolean;
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
-export type StatusReason = "focused" | "polling" | "not-current-tab";
+export type StatusReason = "paused" | "focused" | "polling" | "not-current-tab";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -86,7 +92,8 @@ export type SchedulerEvent =
   | { type: "visibility-changed"; visible: boolean }
   | { type: "tab-activity-changed"; active: boolean }
   | { type: "timer-fired" }
-  | { type: "settings-changed"; settings: Partial<SchedulerSettings> };
+  | { type: "settings-changed"; settings: Partial<SchedulerSettings> }
+  | { type: "pause-toggled"; paused: boolean };
 
 export type SchedulerCommand =
   | { type: "reload" }
@@ -154,11 +161,14 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return { ...state, commanded: { ...state.commanded, timerDueAt: null } };
     case "settings-changed":
       return { ...state, settings: { ...state.settings, ...event.settings } };
+    case "pause-toggled":
+      return { ...state, persisted: { ...state.persisted, paused: event.paused } };
   }
 }
 
 // Step 2 ----------------------------------------------------------------------
 
+const haltWhilePaused: HaltRule = (state) => (state.persisted.paused ? { badge: "idle", reason: "paused" } : null);
 const haltWhileFocused: HaltRule = (state) => (state.focused ? { badge: "idle", reason: "focused" } : null);
 
 /** In "Current tab" mode only the visible, active tab of its window refreshes. */
@@ -168,7 +178,7 @@ const haltUnlessCurrentTab: HaltRule = (state) =>
     : null;
 
 /** Checked in order; the first rule that halts wins. */
-export const HALT_RULES: readonly HaltRule[] = [haltWhileFocused, haltUnlessCurrentTab];
+export const HALT_RULES: readonly HaltRule[] = [haltWhilePaused, haltWhileFocused, haltUnlessCurrentTab];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
 

@@ -290,4 +290,83 @@ describe("Refresh Scheduler", () => {
       ]);
     });
   });
+
+  describe("when the tab is paused", () => {
+    it("cancels the pending timer and goes idle", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      expect(s.send({ type: "pause-toggled", paused: true }, T0 + 5 * SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "paused" },
+      ]);
+    });
+
+    it("shows paused rather than focused while the window has focus", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: true, restored: null }, T0);
+      expect(s.send({ type: "pause-toggled", paused: true }, T0 + 5 * SECOND)).toEqual([
+        { type: "set-badge", badge: "idle", reason: "paused" },
+      ]);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + 10 * 60 * SECOND)).toEqual([]);
+      expect(s.send({ type: "focus-changed", focused: true }, T0 + 11 * 60 * SECOND)).toEqual([]);
+    });
+
+    it("never reloads on blur or when a stale timer fires, however long it waits", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: true, restored: null }, T0);
+      s.send({ type: "pause-toggled", paused: true }, T0 + SECOND);
+      expect(s.send({ type: "focus-changed", focused: false }, T0 + 5 * 60 * SECOND)).toEqual([]);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * 60 * SECOND)).toEqual([]);
+      expect(s.send({ type: "settings-changed", settings: { intervalMs: 10 * SECOND } }, T0 + 11 * 60 * SECOND)).toEqual(
+        [],
+      );
+    });
+
+    it("stays paused when the page loads again with a pause restored", () => {
+      const s = scheduler();
+      expect(
+        s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, paused: true } }, T0 + 10 * 60 * SECOND),
+      ).toEqual([{ type: "set-badge", badge: "idle", reason: "paused" }]);
+    });
+
+    it("stays paused across a page-loaded event that restores no pause flag", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "pause-toggled", paused: true }, T0 + SECOND);
+      expect(s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0 + 10 * 60 * SECOND)).toEqual([
+        { type: "set-badge", badge: "idle", reason: "paused" },
+      ]);
+    });
+  });
+
+  describe("when the tab is unpaused", () => {
+    it("resumes polling for the rest of the interval", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "pause-toggled", paused: true }, T0 + 5 * SECOND);
+      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 20 * SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: 10 * SECOND },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+    });
+
+    it("reloads at once if the interval passed while paused and the window is unfocused", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "pause-toggled", paused: true }, T0 + 5 * SECOND);
+      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 5 * 60 * SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 5 * 60 * SECOND, paused: false } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("goes back to focused idle if the window has focus", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: true, restored: null }, T0);
+      s.send({ type: "pause-toggled", paused: true }, T0 + SECOND);
+      expect(s.send({ type: "pause-toggled", paused: false }, T0 + 2 * SECOND)).toEqual([
+        { type: "set-badge", badge: "idle", reason: "focused" },
+      ]);
+    });
+  });
 });
