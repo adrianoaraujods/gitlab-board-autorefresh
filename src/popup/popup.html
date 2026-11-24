@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Board Auto-Refresh for GitLab</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Board Auto-Refresh</h1>
+      <p id="status" class="status" role="status">
+        <span id="status-dot" class="dot" aria-hidden="true"></span>
+        <span id="status-text">Checking this tab…</span>
+      </p>
+      <p id="status-reason" class="reason"></p>
+      <ul id="status-details" class="details" hidden></ul>
+
+      <label id="pause-row" class="toggle" hidden>
+        <input id="pause-toggle" type="checkbox" />
+        Pause this tab
+      </label>
+
+      <p class="footer"><a id="options-link" href="#">Options</a></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
