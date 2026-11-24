@@ -62,9 +62,21 @@ export function normalizeDetection(value: unknown): Detection {
   return value === "always-reload" ? "always-reload" : "smart";
 }
 
+/** Default minutes between safety-net full reloads (#16). */
+export const DEFAULT_SAFETY_NET_MINUTES = 15;
+
+/** Reads a stored or submitted safety-net setting: whole minutes, 0 = off; anything else is the default. */
+export function normalizeSafetyNetMinutes(value: unknown): number {
+  const minutes = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0) return DEFAULT_SAFETY_NET_MINUTES;
+  return Math.floor(minutes);
+}
+
 export interface SchedulerSettings {
   intervalMs: number;
   mode: TabMode;
+  /** Smart mode: minutes since the last full load after which a due tick reloads whatever detection says; 0 or left out: off. */
+  safetyNetMinutes?: number;
   /** Left out: "always-reload" (v1). The extension's settings default to "smart". */
   detection?: Detection;
 }
@@ -487,7 +499,7 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
 export function onDue(state: SchedulerState, now: number): Transition {
   // A baseline check is outstanding: its answer decides nothing, but wait for it so the due check compares with it.
   if (state.baselinePending) return { state, commands: [] };
-  const step = dueStep(state);
+  const step = dueStep(state, now);
   if (step === null) return { state, commands: [] }; // An answer is outstanding.
   const commands: SchedulerCommand[] = [];
   if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
@@ -511,11 +523,18 @@ type DueStep = { command: SchedulerCommand; next: ReloadCheck } | "reload" | nul
  * (`null`), or reload. In smart detection a due tick first asks whether the
  * board changed; `changed` then goes through the same checks as a v1 tick.
  */
-function dueStep(state: SchedulerState): DueStep {
-  if (state.reloadCheck === "idle" && detecting(state)) {
+function dueStep(state: SchedulerState, now: number): DueStep {
+  if (state.reloadCheck === "idle" && detecting(state) && !safetyNetUp(state, now)) {
     return { command: { type: "check-changes", baseline: state.persisted.baseline ?? null }, next: "changes-pending" };
   }
   return DUE_STEPS[state.reloadCheck];
+}
+
+/** Smart mode's safety net (#16): enough time since the last full load that this tick reloads without asking detection. */
+function safetyNetUp(state: SchedulerState, now: number): boolean {
+  const minutes = state.settings.safetyNetMinutes ?? 0;
+  const { lastReloadAt } = state.persisted;
+  return minutes > 0 && lastReloadAt !== null && now - lastReloadAt >= minutes * 60_000;
 }
 
 const DUE_STEPS: Record<ReloadCheck, DueStep> = {
