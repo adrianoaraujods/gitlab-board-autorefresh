@@ -3,8 +3,14 @@
   "name": "Board Auto-Refresh for GitLab",
   "short_name": "Board Auto-Refresh",
   "version": "0.1.0",
-  "description": "Auto-refreshes GitLab issue boards while their window is unfocused. Not an official GitLab product.",
+  "description": "Auto-refreshes issue boards for GitLab while their window is unfocused. Not an official GitLab product.",
   "minimum_chrome_version": "102",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": ["storage", "scripting"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {
@@ -12,6 +18,10 @@
   },
   "action": {
     "default_title": "Board Auto-Refresh for GitLab",
+    "default_icon": {
+      "16": "icons/toolbar-16.png",
+      "32": "icons/toolbar-32.png"
+    },
     "default_popup": "popup.html"
   },
   "options_ui": {
