@@ -277,6 +277,18 @@ describe("Change Detector", () => {
       });
     });
 
+    describe("reports signed-out when GitLab answers an expired session with no board", () => {
+      it.each([
+        ["a null board", { data: { project: { board: null } } }],
+        ["a null project", { data: { project: null } }],
+        ["a null group", { data: { group: null } }],
+        ["a null group board", { data: { group: { board: null } } }],
+      ])("with %s", (_name, response) => {
+        expect(compareWithProjectBoard(response).kind).toBe("signed-out");
+        expect(compare(null, response).kind).toBe("signed-out");
+      });
+    });
+
     describe("reports the response invalid when", () => {
       it("GraphQL answers with errors", () => {
         expect(compareWithProjectBoard(fixture("graphql-errors")).kind).toBe("invalid");
@@ -292,8 +304,7 @@ describe("Change Detector", () => {
         expect(compareWithProjectBoard(board).kind).toBe("invalid");
       });
 
-      it("there is no board", () => {
-        expect(compareWithProjectBoard({ data: { project: { board: null } } }).kind).toBe("invalid");
+      it("there is no data or it isn't JSON", () => {
         expect(compareWithProjectBoard({ data: null }).kind).toBe("invalid");
         expect(compareWithProjectBoard("<!doctype html>").kind).toBe("invalid");
       });
@@ -330,5 +341,6 @@ function compareWithProjectBoard(response: unknown) {
 function baselineOf(response: unknown) {
   const taken = compare(null, response);
   if (taken.kind === "invalid") throw new Error(`fixture has no fingerprint: ${taken.problem}`);
+  if (taken.kind === "signed-out") throw new Error("fixture has no board");
   return taken.fingerprint;
 }
