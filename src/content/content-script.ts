@@ -23,9 +23,16 @@
  * the order is: blocker check → (if clear) HEAD reachability check plus a
  * second blocker check → (if the scheduler still wants it) save the scroll
  * snapshot → reload.
+ *
+ * In smart detection (#11) the scheduler asks for `check-changes` first: one
+ * POST to the instance's `/api/graphql` with the session cookie and the
+ * page's CSRF token, built and compared by the Change Detector. A failed
+ * request is reported as such; a board URL without a board id can't be
+ * fingerprinted and answers `invalid` (the scheduler then reloads like v1).
  */
 import { detectBlockers } from "../core/blocker-detector";
 import { isBoardDocument, isBoardPage, matchBoardPage } from "../core/board-page-matcher";
+import { buildFingerprintRequest, compare, readBoardContext, type BoardFingerprint } from "../core/change-detector";
 import {
   initialSchedulerState,
   transition,
@@ -66,6 +73,9 @@ function run(command: SchedulerCommand): void {
             : { type: "reachability-checked", reachable },
         ),
       );
+      return;
+    case "check-changes":
+      void checkChanges(command.baseline).then(dispatch);
       return;
     case "reload":
       saveScroll();
@@ -115,6 +125,40 @@ async function checkReachability(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** How long the change-detection request may take before it counts as failed. */
+const CHECK_CHANGES_TIMEOUT_MS = 30_000;
+
+/** Fetches the board's fingerprint and compares it with `baseline` (Change Detector). */
+async function checkChanges(baseline: BoardFingerprint | null): Promise<SchedulerEvent> {
+  const page = readBoardContext(location.href, document);
+  if (page === null) {
+    return { type: "changes-checked", reachable: true, detection: { kind: "invalid", problem: "no board id in the URL" } };
+  }
+  const { query, variables } = buildFingerprintRequest(page.board);
+  let response: Response;
+  try {
+    response = await fetch(page.graphqlUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+      body: JSON.stringify({ operationName: "BoardAutoRefreshFingerprint", query, variables }),
+      signal: AbortSignal.timeout(CHECK_CHANGES_TIMEOUT_MS),
+    });
+  } catch {
+    return { type: "changes-checked", reachable: false };
+  }
+  if (!response.ok) return { type: "changes-checked", reachable: false };
+  // A body that isn't JSON is a response detection can't read.
+  const body: unknown = await response.json().catch(() => null);
+  return { type: "changes-checked", reachable: true, detection: compare(baseline, body) };
+}
+
+/** GitLab's CSRF token from the page head, sent as `X-CSRF-Token` like GitLab's own GraphQL client. */
+function csrfToken(): string {
+  return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? "";
 }
 
 /**
@@ -253,7 +297,7 @@ async function main(): Promise<void> {
     dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
   );
   onSettingsChanged((keys) => {
-    if (!keys.includes("intervalSeconds") && !keys.includes("mode")) return;
+    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection")) return;
     void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });
 }
