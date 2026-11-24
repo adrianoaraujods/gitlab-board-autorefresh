@@ -1,6 +1,6 @@
 /**
- * The toolbar badge states (spec #1). The skeleton only uses "idle"; later
- * tickets add "polling" (green), "blocked" (yellow) and "error" (red), emitted
- * as set-badge commands by the Refresh Scheduler.
+ * The toolbar badge states (spec #1): "idle" (grey) and "polling" (green).
+ * Later tickets add "blocked" (yellow, #4) and "error" (red, #8). The Refresh
+ * Scheduler emits them as set-badge commands.
  */
-export type BadgeState = "idle";
+export type BadgeState = "idle" | "polling";

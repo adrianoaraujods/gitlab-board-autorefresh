@@ -13,7 +13,8 @@ npm run build      # bundles into dist/
 ```
 
 Load `dist/` via `chrome://extensions` → Developer mode → **Load unpacked**. Open the extension's
-options, click **Grant** next to a domain, then open an issue board on it: the toolbar badge turns grey (idle).
+options, click **Grant** next to a domain, then open an issue board on it: the toolbar badge is grey (idle) while the board's window is
+focused, and green (polling) while it is unfocused, reloading every interval.
 
 ## Layout
 
@@ -22,6 +23,8 @@ options, click **Grant** next to a domain, then open an issue board on it: the t
 | `src/core/` | Pure, browser-free modules with unit tests (`*.test.ts` next to the code) |
 | `src/core/board-page-matcher.ts` | Board Page Matcher |
 | `src/core/domain-origin.ts` | Domain validation (origin only) and match patterns |
+| `src/core/refresh-scheduler.ts` | Refresh Scheduler: pure `(state, event, now) → { state, commands }` transition |
+| `src/core/refresh-interval.ts` | Refresh interval validation (default 30s, minimum 10s) |
 | `src/core/badge.ts` | Badge states |
 | `src/shared/` | Browser helpers used by several entry points: settings (`chrome.storage.sync`) and messages |
 | `src/background/` | Background Service Worker: badge per tab, dynamic content-script registration |
