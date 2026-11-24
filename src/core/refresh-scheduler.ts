@@ -265,10 +265,10 @@ export function plan(state: SchedulerState, now: number): Plan {
   return { kind: "waiting", dueAt, status: waitingStatus(state) };
 }
 
-/** Failing reloads show red; otherwise a skipped (blocked) tick shows yellow until the next reload. */
+/** A skipped (blocked) tick shows yellow until the next check, even while failures back off; otherwise failing reloads show red. */
 function waitingStatus(state: SchedulerState): SchedulerStatus {
-  if (failures(state) > 0) return FAILING;
-  return state.blockedAt === null ? POLLING : BLOCKED;
+  if (state.blockedAt !== null) return BLOCKED;
+  return failures(state) > 0 ? FAILING : POLLING;
 }
 
 /** A failing tab that stops for focus or tab activity keeps its red badge until a board loads; a pause still shows. */

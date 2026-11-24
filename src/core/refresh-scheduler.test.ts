@@ -627,12 +627,13 @@ describe("Refresh Scheduler: blockers together with failures", () => {
     expect(s.send({ type: "timer-fired" }, T0 + 3 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
   });
 
-  it("keeps the badge red when a retry is blocked, and tries again one interval later", () => {
+  it("turns the badge yellow when a retry is blocked, and tries again one interval later", () => {
     const s = scheduler();
     s.send({ type: "page-loaded", page: "error", focused: false, restored: { lastReloadAt: T0 } }, T0);
     expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
     expect(s.send({ type: "blockers-checked", reasons: ["unsaved-input"] }, T0 + 2 * INTERVAL)).toEqual([
       { type: "schedule-timer", delayMs: INTERVAL },
+      { type: "set-badge", badge: "blocked", reason: "blocked" },
     ]);
   });
 });
