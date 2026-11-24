@@ -4,7 +4,7 @@
  */
 import { originMatchPattern, parseDomainOrigin } from "../core/domain-origin";
 import { parseIntervalSeconds } from "../core/refresh-interval";
-import { normalizeDetection, normalizeTabMode } from "../core/refresh-scheduler";
+import { normalizeDetection, normalizeSafetyNetMinutes, normalizeTabMode } from "../core/refresh-scheduler";
 import { loadSettings, onSettingsChanged, saveSettings } from "../shared/settings";
 
 const list = document.querySelector<HTMLUListElement>("#domain-list")!;
@@ -158,3 +158,27 @@ void render();
 void renderInterval();
 void renderMode();
 void renderDetection();
+
+const safetyNetInput = document.querySelector<HTMLInputElement>("#safety-net-input")!;
+const safetyNetError = document.querySelector<HTMLParagraphElement>("#safety-net-error")!;
+
+async function renderSafetyNet(): Promise<void> {
+  safetyNetInput.value = String((await loadSettings()).safetyNetMinutes);
+}
+
+safetyNetInput.addEventListener("change", () => {
+  safetyNetError.hidden = true;
+  const safetyNetMinutes = normalizeSafetyNetMinutes(safetyNetInput.value);
+  saveSettings({ safetyNetMinutes }).then(
+    () => void renderSafetyNet(),
+    (error: unknown) => {
+      safetyNetError.textContent = errorMessage(error);
+      safetyNetError.hidden = false;
+    },
+  );
+});
+
+onSettingsChanged((keys) => {
+  if (keys.includes("safetyNetMinutes")) void renderSafetyNet();
+});
+void renderSafetyNet();

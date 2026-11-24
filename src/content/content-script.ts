@@ -297,7 +297,7 @@ async function main(): Promise<void> {
     dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
   );
   onSettingsChanged((keys) => {
-    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection")) return;
+    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection") && !keys.includes("safetyNetMinutes")) return;
     void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });
 }
