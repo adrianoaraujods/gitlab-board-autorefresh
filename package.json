@@ -1,6 +1,6 @@
 {
   "name": "gitlab-board-autorefresh",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Auto-refreshes issue boards for GitLab while their window is unfocused. Not an official GitLab product.",
   "license": "MIT",
