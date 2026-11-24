@@ -5,6 +5,7 @@ import {
   type SchedulerCommand,
   type SchedulerEvent,
   type SchedulerState,
+  type TabMode,
 } from "./refresh-scheduler";
 
 const SECOND = 1000;
@@ -16,8 +17,8 @@ const T0 = 1_700_000_000_000;
  * Feeds events into the scheduler one at a time, threading state through, and
  * returns the commands each event produced. Tests only look at commands.
  */
-function scheduler(intervalMs = INTERVAL) {
-  let state: SchedulerState = initialSchedulerState({ intervalMs });
+function scheduler(intervalMs = INTERVAL, mode: TabMode = "current-tab") {
+  let state: SchedulerState = initialSchedulerState({ intervalMs, mode });
   return {
     send(event: SchedulerEvent, at: number): SchedulerCommand[] {
       const result = transition(state, event, at);
@@ -163,6 +164,129 @@ describe("Refresh Scheduler", () => {
       expect(s.send({ type: "focus-changed", focused: false }, T0 + 40 * SECOND)).toEqual([
         { type: "schedule-timer", delayMs: 20 * SECOND },
         { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+    });
+  });
+
+  describe('in "Current tab" mode', () => {
+    it("does not reload a hidden tab, however long it waits", () => {
+      const s = scheduler();
+      expect(s.send({ type: "page-loaded", focused: false, visible: false, active: true, restored: null }, T0)).toEqual([
+        { type: "set-badge", badge: "idle", reason: "not-current-tab" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * 60 * SECOND)).toEqual([]);
+    });
+  
+    it("does not reload a tab that is not the active tab of its window", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      expect(s.send({ type: "tab-activity-changed", active: false }, T0 + 5 * SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "not-current-tab" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * 60 * SECOND)).toEqual([]);
+    });
+
+    it("stops polling when the tab becomes hidden mid-cycle", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      expect(s.send({ type: "visibility-changed", visible: false }, T0 + 5 * SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "not-current-tab" },
+      ]);
+    });
+
+    it("reloads right away when a hidden tab becomes visible after the interval has passed", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, visible: false, active: true, restored: null }, T0);
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 2 * 60 * SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 2 * 60 * SECOND } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("waits out the rest of the interval when a hidden tab becomes visible soon after its last reload", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, visible: false, active: true, restored: null }, T0);
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 20 * SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: 10 * SECOND },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+    });
+
+    it("reloads right away when a background tab becomes active and visible after the interval has passed", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0);
+      expect(s.send({ type: "tab-activity-changed", active: true }, T0 + 2 * 60 * SECOND)).toEqual([]);
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 2 * 60 * SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 2 * 60 * SECOND } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("stays idle while focused, whatever the tab's visibility", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: true, restored: null }, T0);
+      expect(s.send({ type: "visibility-changed", visible: false }, T0 + 5 * SECOND)).toEqual([]);
+      expect(s.send({ type: "visibility-changed", visible: true }, T0 + 10 * 60 * SECOND)).toEqual([]);
+    });
+  });
+
+  describe('in "All tabs" mode', () => {
+    it("keeps reloading a hidden tab every interval", () => {
+      const s = scheduler(INTERVAL, "all-tabs");
+      expect(s.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + INTERVAL } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("keeps polling when the tab becomes inactive or hidden", () => {
+      const s = scheduler(INTERVAL, "all-tabs");
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      expect(s.send({ type: "tab-activity-changed", active: false }, T0 + 5 * SECOND)).toEqual([]);
+      expect(s.send({ type: "visibility-changed", visible: false }, T0 + 5 * SECOND)).toEqual([]);
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + INTERVAL } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("still stays idle while the window is focused", () => {
+      const s = scheduler(INTERVAL, "all-tabs");
+      expect(s.send({ type: "page-loaded", focused: true, visible: false, active: false, restored: null }, T0)).toEqual([
+        { type: "set-badge", badge: "idle", reason: "focused" },
+      ]);
+    });
+  });
+
+  describe("when the mode setting changes", () => {
+    it('stops polling a hidden tab when switched to "Current tab"', () => {
+      const s = scheduler(INTERVAL, "all-tabs");
+      s.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0);
+      expect(s.send({ type: "settings-changed", settings: { mode: "current-tab" } }, T0 + 10 * SECOND)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "idle", reason: "not-current-tab" },
+      ]);
+    });
+
+    it('resumes a hidden tab when switched to "All tabs", reloading if the interval has passed', () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0);
+      expect(s.send({ type: "settings-changed", settings: { mode: "all-tabs" } }, T0 + 10 * SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: 20 * SECOND },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+
+      const late = scheduler();
+      late.send({ type: "page-loaded", focused: false, visible: false, active: false, restored: null }, T0);
+      expect(late.send({ type: "settings-changed", settings: { mode: "all-tabs" } }, T0 + 2 * 60 * SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + 2 * 60 * SECOND } },
+        { type: "reload" },
       ]);
     });
   });
