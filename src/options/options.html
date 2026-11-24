@@ -74,6 +74,19 @@
         </fieldset>
         <p id="detection-error" class="error" role="alert" hidden></p>
       </section>
+
+      <section aria-labelledby="own-edits-heading">
+        <h2 id="own-edits-heading">Own edits</h2>
+        <label class="choice">
+          <input type="checkbox" id="own-edits-input" />
+          <span>
+            <strong>Refresh after my own edits</strong>: reload after any change, including ones you made. Off by
+            default, since your own edits are already on your screen. While off, a change made by someone else
+            while you were editing could be missed until the next change.
+          </span>
+        </label>
+        <p id="own-edits-error" class="error" role="alert" hidden></p>
+      </section>
     </main>
     <script src="options.js"></script>
   </body>

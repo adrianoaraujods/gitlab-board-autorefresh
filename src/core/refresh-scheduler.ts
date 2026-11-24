@@ -377,6 +377,7 @@ function changesChecked(
   }
   if (state.reloadCheck !== "changes-pending") return state;
   switch (detection?.kind) {
+    case "own-edit": // Already on the user's screen: the new baseline, no reload.
     case "unchanged": {
       // The server answered, so earlier failures are over; the next check is an interval from now.
       const persisted = withFailures({ ...state.persisted, baseline: detection.fingerprint }, 0);

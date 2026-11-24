@@ -145,12 +145,29 @@ detectionFieldset.addEventListener("change", (event) => {
   });
 });
 
+const ownEditsInput = document.querySelector<HTMLInputElement>("#own-edits-input")!;
+const ownEditsError = document.querySelector<HTMLParagraphElement>("#own-edits-error")!;
+
+async function renderOwnEdits(): Promise<void> {
+  ownEditsInput.checked = (await loadSettings()).refreshAfterOwnEdits;
+}
+
+ownEditsInput.addEventListener("change", () => {
+  ownEditsError.hidden = true;
+  saveSettings({ refreshAfterOwnEdits: ownEditsInput.checked }).catch((error: unknown) => {
+    ownEditsError.textContent = errorMessage(error);
+    ownEditsError.hidden = false;
+    void renderOwnEdits();
+  });
+});
+
 onSettingsChanged((keys) => {
   if (keys.includes("domains")) void render();
   if (keys.includes("intervalSeconds")) void renderInterval();
   if (keys.includes("mode")) void renderMode();
 void renderDetection();
   if (keys.includes("detection")) void renderDetection();
+  if (keys.includes("refreshAfterOwnEdits")) void renderOwnEdits();
 });
 chrome.permissions.onAdded.addListener(() => void render());
 chrome.permissions.onRemoved.addListener(() => void render());
@@ -158,3 +175,4 @@ void render();
 void renderInterval();
 void renderMode();
 void renderDetection();
+void renderOwnEdits();

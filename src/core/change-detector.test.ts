@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-import { buildFingerprintRequest, compare, readBoardContext } from "./change-detector";
+import {
+  buildFingerprintRequest,
+  compare,
+  readBoardContext,
+  readCurrentUserId,
+  type CompareContext,
+} from "./change-detector";
 
 /** Reads a hand-written, scrubbed GraphQL response modelled on GitLab 19.5 from `fixtures/gitlab-19.5/`. */
 function fixture(name: string): any {
@@ -47,7 +53,11 @@ describe("Change Detector", () => {
 
   describe("request", () => {
     it("asks for a project board by full path and board id", () => {
-      const request = buildFingerprintRequest({ fullPath: "group/project", boardId: "1", parent: "project" });
+      const request = buildFingerprintRequest({
+        fullPath: "group/project",
+        boardId: "1",
+        parent: "project",
+      });
       expect(request.variables).toEqual({
         fullPath: "group/project",
         boardId: "gid://gitlab/Board/1",
@@ -58,7 +68,11 @@ describe("Change Detector", () => {
     });
 
     it("asks for a group board by full path and board id", () => {
-      const request = buildFingerprintRequest({ fullPath: "group/subgroup", boardId: "7", parent: "group" });
+      const request = buildFingerprintRequest({
+        fullPath: "group/subgroup",
+        boardId: "7",
+        parent: "group",
+      });
       expect(request.variables).toEqual({
         fullPath: "group/subgroup",
         boardId: "gid://gitlab/Board/7",
@@ -69,7 +83,11 @@ describe("Change Detector", () => {
     });
 
     it("sends one named query that never asks for the per-user collapsed flag", () => {
-      const { query } = buildFingerprintRequest({ fullPath: "group/project", boardId: "1", parent: "project" });
+      const { query } = buildFingerprintRequest({
+        fullPath: "group/project",
+        boardId: "1",
+        parent: "project",
+      });
       expect(query).toMatch(/^query BoardAutoRefreshFingerprint\b/);
       expect(query).not.toMatch(/collapsed/);
     });
@@ -91,7 +109,10 @@ describe("Change Detector", () => {
           lists[2].issues.nodes.push(card("gid://gitlab/Issue/17", "2026-11-23T09:00:00Z"));
           lists[2].issuesCount = 1;
         });
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("a card is removed from a list (closed elsewhere, moved off the board, deleted)", () => {
@@ -99,7 +120,10 @@ describe("Change Detector", () => {
           lists[0].issues.nodes.splice(1, 1);
           lists[0].issuesCount = 1;
         });
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("a card moves to another list", () => {
@@ -109,18 +133,27 @@ describe("Change Detector", () => {
           lists[2].issues.nodes.push(moved);
           lists[2].issuesCount = 1;
         });
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("cards are reordered within a list, with no timestamp touched", () => {
         const board = edited((lists) => lists[1].issues.nodes.reverse());
         // Issues 13 and 15 swap places; 14 stays in the middle.
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 2 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 2,
+        });
       });
 
       it("a card's fields are edited (its updatedAt moves on)", () => {
         const board = edited((lists) => (lists[0].issues.nodes[0].updatedAt = "2026-11-23T10:00:00Z"));
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("several cards are edited, counting each card once", () => {
@@ -129,7 +162,10 @@ describe("Change Detector", () => {
           lists[1].issues.nodes[1].updatedAt = "2026-11-23T10:00:05Z";
           lists[3].issues.nodes[0].updatedAt = "2026-11-23T10:00:09Z";
         });
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 3 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 3,
+        });
       });
 
       it("a list is added", () => {
@@ -140,17 +176,27 @@ describe("Change Detector", () => {
             listType: "label",
             position: 2,
             collapsed: false,
-            label: { id: "gid://gitlab/ProjectLabel/23", title: "Blocked", color: "#dc143c" },
+            label: {
+              id: "gid://gitlab/ProjectLabel/23",
+              title: "Blocked",
+              color: "#dc143c",
+            },
             issuesCount: 0,
             issues: { nodes: [] },
           }),
         );
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("an empty list is removed", () => {
         const board = edited((lists) => lists.splice(2, 1));
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("lists are reordered", () => {
@@ -169,13 +215,22 @@ describe("Change Detector", () => {
           lists[2].title = "In review";
         });
         const recoloured = edited((lists) => (lists[2].label.color = "#ff8c00"));
-        expect(compareWithProjectBoard(renamed)).toMatchObject({ kind: "remote", changedCount: 1 });
-        expect(compareWithProjectBoard(recoloured)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(renamed)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
+        expect(compareWithProjectBoard(recoloured)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
 
       it("a list's total count changes beyond the cards fetched", () => {
         const board = edited((lists) => (lists[1].issuesCount = 24));
-        expect(compareWithProjectBoard(board)).toMatchObject({ kind: "remote", changedCount: 1 });
+        expect(compareWithProjectBoard(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
       });
     });
 
@@ -194,6 +249,149 @@ describe("Change Detector", () => {
           lists[2].collapsed = false;
         });
         expect(compareWithProjectBoard(board).kind).toBe("unchanged");
+      });
+    });
+
+    describe("own edits", () => {
+      const ME = "gid://gitlab/User/3";
+      const context = (extra: Partial<CompareContext> = {}): CompareContext => ({
+        currentUserId: ME,
+        localDrag: false,
+        refreshAfterOwnEdits: false,
+        ...extra,
+      });
+      const compareAs = (response: unknown, extra?: Partial<CompareContext>) =>
+        compare(baselineOf(fixture("graphql-project-board")), response, context(extra));
+
+      /** I edit card 13: it gets a new timestamp and my id. */
+      const editedByMe = (lists: any[]) => {
+        lists[1].issues.nodes[0].updatedAt = "2026-11-23T10:00:00Z";
+        lists[1].issues.nodes[0].updatedBy = { id: ME };
+      };
+
+      it("is an own edit when the one changed card was last updated by me", () => {
+        expect(compareAs(edited(editedByMe))).toMatchObject({
+          kind: "own-edit",
+        });
+      });
+
+      it("becomes the new baseline: the same data on the next check is unchanged", () => {
+        const own = compareAs(edited(editedByMe));
+        if (own.kind !== "own-edit") throw new Error("expected own-edit");
+        expect(compare(own.fingerprint, edited(editedByMe), context()).kind).toBe("unchanged");
+      });
+
+      it("is an own edit when I move a card to another list (counts follow the card)", () => {
+        const board = edited((lists) => {
+          const [moved] = lists[1].issues.nodes.splice(2, 1);
+          moved.updatedAt = "2026-11-23T10:00:00Z";
+          moved.updatedBy = { id: ME };
+          lists[1].issuesCount = 2;
+          lists[2].issues.nodes.push(moved);
+          lists[2].issuesCount = 1;
+        });
+        expect(compareAs(board).kind).toBe("own-edit");
+      });
+
+      it("is remote when someone else edited the card", () => {
+        const board = edited((lists) => {
+          lists[1].issues.nodes[0].updatedAt = "2026-11-23T10:00:00Z";
+          lists[1].issues.nodes[0].updatedBy = { id: "gid://gitlab/User/2" };
+        });
+        expect(compareAs(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 1,
+        });
+      });
+
+      it("is remote when my edit is mixed with someone else's", () => {
+        const board = edited((lists) => {
+          editedByMe(lists);
+          lists[0].issues.nodes[0].updatedAt = "2026-11-23T10:00:05Z";
+          lists[0].issues.nodes[0].updatedBy = { id: "gid://gitlab/User/2" };
+        });
+        expect(compareAs(board)).toMatchObject({
+          kind: "remote",
+          changedCount: 2,
+        });
+      });
+
+      it("is remote when a card disappeared, even if I edited another", () => {
+        const board = edited((lists) => {
+          editedByMe(lists);
+          lists[0].issues.nodes.splice(1, 1);
+          lists[0].issuesCount = 1;
+        });
+        expect(compareAs(board).kind).toBe("remote");
+      });
+
+      it("is remote when a list changed, even if I edited a card", () => {
+        const board = edited((lists) => {
+          editedByMe(lists);
+          lists[2].label.title = "In review";
+          lists[2].title = "In review";
+        });
+        expect(compareAs(board).kind).toBe("remote");
+      });
+
+      it("is remote when a list's total changed with no visible card change to explain it", () => {
+        expect(compareAs(edited((lists) => (lists[1].issuesCount = 24))).kind).toBe("remote");
+      });
+
+      it("is remote when the current user is unknown", () => {
+        expect(compareAs(edited(editedByMe), { currentUserId: null }).kind).toBe("remote");
+      });
+
+      it("treats an order-only change as an own edit when I finished a drag", () => {
+        const board = edited((lists) => lists[1].issues.nodes.reverse());
+        expect(compareAs(board, { localDrag: true })).toMatchObject({
+          kind: "own-edit",
+        });
+      });
+
+      it("treats an order-only change as remote without a drag of mine", () => {
+        const board = edited((lists) => lists[1].issues.nodes.reverse());
+        expect(compareAs(board, { localDrag: false })).toMatchObject({
+          kind: "remote",
+          changedCount: 2,
+        });
+      });
+
+      it("does not excuse someone else's edit by a local drag", () => {
+        const board = edited((lists) => {
+          lists[1].issues.nodes.reverse();
+          lists[0].issues.nodes[0].updatedAt = "2026-11-23T10:00:05Z";
+          lists[0].issues.nodes[0].updatedBy = { id: "gid://gitlab/User/2" };
+        });
+        expect(compareAs(board, { localDrag: true }).kind).toBe("remote");
+      });
+
+      it("is remote for any difference when refreshing after my own edits", () => {
+        expect(compareAs(edited(editedByMe), { refreshAfterOwnEdits: true }).kind).toBe("remote");
+        const reordered = edited((lists) => lists[1].issues.nodes.reverse());
+        expect(compareAs(reordered, { localDrag: true, refreshAfterOwnEdits: true }).kind).toBe("remote");
+      });
+
+      it("leaves an unchanged board unchanged", () => {
+        expect(compareAs(fixture("graphql-project-board")).kind).toBe("unchanged");
+      });
+    });
+
+    describe("current user", () => {
+      const docWith = (script: string) =>
+        new JSDOM(`<!doctype html><body><script>${script}</script></body>`, {
+          url: "https://gitlab.example/",
+        }).window.document;
+
+      it("is read from the id GitLab puts in the page's inline data", () => {
+        expect(readCurrentUserId(docWith("window.gon={};gon.current_user_id=42;gon.other=1"))).toBe(
+          "gid://gitlab/User/42",
+        );
+        expect(readCurrentUserId(docWith('{"current_user_id":7}'))).toBe("gid://gitlab/User/7");
+      });
+
+      it("is unknown without one", () => {
+        expect(readCurrentUserId(docWith("var a = 1;"))).toBeNull();
       });
     });
 

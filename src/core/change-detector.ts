@@ -140,46 +140,112 @@ export function buildFingerprintRequest(context: BoardContext): FingerprintReque
  * it as opaque: only `compare` reads it.
  */
 export interface BoardFingerprint {
-  /** Lists in board order, each keyed by what its header shows and its total card count. */
-  lists: { id: string; key: string }[];
+  /** Lists in board order, each keyed by what its header shows, with its total card count apart. */
+  lists: { id: string; key: string; count: number }[];
   /** Card id → when it last changed and where it sits (list and order index within the list). */
   cards: Record<string, string>;
 }
 
 /**
- * The result of a check. `unchanged` and `remote` carry the fingerprint of the
- * response, to become the next baseline once the caller has acted on it.
+ * The result of a check. `unchanged`, `own-edit` and `remote` carry the
+ * fingerprint of the response, to become the next baseline once the caller
+ * has acted on it (at once for `unchanged` and `own-edit`: nothing to reload).
+ * `own-edit` means every difference is the current user's own work.
  * `remote.changedCount` is the number of cards added, removed or changed, and
  * at least 1 when only the lists changed. `invalid` means the response wasn't
  * the expected shape (GraphQL errors, a missing field, no board).
  */
 export type ChangeDetection =
   | { kind: "unchanged"; fingerprint: BoardFingerprint }
+  | { kind: "own-edit"; fingerprint: BoardFingerprint }
   | { kind: "remote"; changedCount: number; fingerprint: BoardFingerprint }
   | { kind: "invalid"; problem: string };
+
+/** What the adapter knows about the current user's activity in this tab (#15). */
+export interface CompareContext {
+  /** The current user as GitLab's `updatedBy.id` shows it, or `null` if the page doesn't say. */
+  currentUserId: string | null;
+  /** A card drag finished in this tab since the baseline (or last check). */
+  localDrag: boolean;
+  /** "Refresh after my own edits": any difference is `remote`. */
+  refreshAfterOwnEdits: boolean;
+}
+
+const NO_CONTEXT: CompareContext = {
+  currentUserId: null,
+  localDrag: false,
+  refreshAfterOwnEdits: false,
+};
 
 /**
  * Compares a fingerprint response (the parsed GraphQL JSON body) with the
  * baseline. With no baseline yet, a valid response is `unchanged` and its
  * fingerprint becomes the baseline.
+ *
+ * A difference is an `own-edit` (unless `refreshAfterOwnEdits`) when the
+ * lists' structure is the same and either every changed card is still on the
+ * board and was last updated by the current user, or only the order changed
+ * (no card's `updatedAt` moved) after a local drag. Anything else, including
+ * a list total that no visible card change explains, is `remote`.
  */
-export function compare(baseline: BoardFingerprint | null, response: unknown): ChangeDetection {
+export function compare(
+  baseline: BoardFingerprint | null,
+  response: unknown,
+  context: CompareContext = NO_CONTEXT,
+): ChangeDetection {
   const read = readFingerprint(response);
   if (typeof read === "string") return { kind: "invalid", problem: read };
-  if (baseline === null) return { kind: "unchanged", fingerprint: read };
-  const changedCards = countChangedCards(baseline.cards, read.cards);
-  const listsChanged = !sameLists(baseline.lists, read.lists);
-  if (changedCards === 0 && !listsChanged) return { kind: "unchanged", fingerprint: read };
-  return { kind: "remote", changedCount: Math.max(changedCards, 1), fingerprint: read };
+  const { fingerprint, editors } = read;
+  if (baseline === null) return { kind: "unchanged", fingerprint };
+  const changedIds = changedCardIds(baseline.cards, fingerprint.cards);
+  const structureChanged = !sameLists(baseline.lists, fingerprint.lists, (list) => list.key);
+  const countsChanged = !sameLists(baseline.lists, fingerprint.lists, (list) => String(list.count));
+  if (changedIds.length === 0 && !structureChanged && !countsChanged) return { kind: "unchanged", fingerprint };
+  const remote: ChangeDetection = {
+    kind: "remote",
+    changedCount: Math.max(changedIds.length, 1),
+    fingerprint,
+  };
+  if (context.refreshAfterOwnEdits || structureChanged || changedIds.length === 0) return remote;
+
+  const updatedAt = (card: string | undefined) => card?.split(" ")[0];
+  const orderOnly =
+    !countsChanged && changedIds.every((id) => updatedAt(baseline.cards[id]) === updatedAt(fingerprint.cards[id]));
+  if (orderOnly) return context.localDrag ? { kind: "own-edit", fingerprint } : remote;
+  const allMine =
+    context.currentUserId !== null &&
+    changedIds.every((id) => id in fingerprint.cards && editors.get(id) === context.currentUserId);
+  return allMine ? { kind: "own-edit", fingerprint } : remote;
 }
 
-function countChangedCards(before: Record<string, string>, after: Record<string, string>): number {
+function changedCardIds(before: Record<string, string>, after: Record<string, string>): string[] {
   const ids = new Set([...Object.keys(before), ...Object.keys(after)]);
-  return [...ids].filter((id) => before[id] !== after[id]).length;
+  return [...ids].filter((id) => before[id] !== after[id]);
 }
 
-function sameLists(a: BoardFingerprint["lists"], b: BoardFingerprint["lists"]): boolean {
-  return a.length === b.length && a.every((list, i) => list.id === b[i]?.id && list.key === b[i]?.key);
+/** Whether both have the same lists in the same order, and `part` of each is equal. */
+function sameLists(
+  a: BoardFingerprint["lists"],
+  b: BoardFingerprint["lists"],
+  part: (list: BoardFingerprint["lists"][number]) => string,
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((list, i) => b[i] !== undefined && list.id === b[i].id && part(list) === part(b[i]))
+  );
+}
+
+/**
+ * The current user's id as GitLab's GraphQL shows it, read from the page's
+ * inline data (`gon.current_user_id`); `null` if the page doesn't carry it.
+ * Content scripts can't read the page's `window.gon`, so the script text is read.
+ */
+export function readCurrentUserId(document: Document): string | null {
+  for (const script of document.querySelectorAll("script:not([src])")) {
+    const match = /current_user_id["']?\s*[=:]\s*(\d+)/.exec(script.textContent ?? "");
+    if (match) return `gid://gitlab/User/${match[1]}`;
+  }
+  return null;
 }
 
 // Reading the response ----------------------------------------------------------
@@ -190,8 +256,10 @@ function isObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The response's fingerprint, or what is wrong with it. */
-function readFingerprint(response: unknown): BoardFingerprint | string {
+/** The response's fingerprint with who last updated each card, or what is wrong with it. */
+function readFingerprint(
+  response: unknown,
+): { fingerprint: BoardFingerprint; editors: Map<string, string | null> } | string {
   if (!isObject(response)) return "response is not a JSON object";
   if (Array.isArray(response.errors) && response.errors.length > 0) return "GraphQL errors";
   const { data } = response;
@@ -202,27 +270,33 @@ function readFingerprint(response: unknown): BoardFingerprint | string {
   if (!isObject(lists) || !Array.isArray(lists.nodes)) return "no lists";
 
   const fingerprint: BoardFingerprint = { lists: [], cards: {} };
+  const editors = new Map<string, string | null>();
   const placements = new Map<string, { updatedAt: string; at: string[] }>();
   for (const list of lists.nodes) {
     const key = listKey(list);
     if (key === null || !isObject(list)) return "unexpected list";
     const id = list.id as string;
-    fingerprint.lists.push({ id, key });
+    fingerprint.lists.push({ id, key, count: list.issuesCount as number });
     const issues = list.issues;
     if (!isObject(issues) || !Array.isArray(issues.nodes)) return "no cards";
     for (const [index, card] of issues.nodes.entries()) {
       if (!isObject(card) || typeof card.id !== "string" || typeof card.updatedAt !== "string") return "unexpected card";
+      const by = card.updatedBy;
+      editors.set(card.id, isObject(by) && typeof by.id === "string" ? by.id : null);
       // An issue can show in several lists (one per matching label): one entry, all its places.
-      const entry = placements.get(card.id) ?? { updatedAt: card.updatedAt, at: [] };
+      const entry = placements.get(card.id) ?? {
+        updatedAt: card.updatedAt,
+        at: [],
+      };
       entry.at.push(`${id}#${index}`);
       placements.set(card.id, entry);
     }
   }
   for (const [id, { updatedAt, at }] of placements) fingerprint.cards[id] = [updatedAt, ...at.sort()].join(" ");
-  return fingerprint;
+  return { fingerprint, editors };
 }
 
-/** What a list's header shows and its total card count, or `null` if a field is missing. The per-user `collapsed` flag is left out. */
+/** What a list's header shows (not its total card count, kept apart), or `null` if a field is missing. The per-user `collapsed` flag is left out. */
 function listKey(list: unknown): string | null {
   if (!isObject(list) || typeof list.id !== "string" || typeof list.listType !== "string") return null;
   if (typeof list.issuesCount !== "number") return null;
@@ -231,5 +305,5 @@ function listKey(list: unknown): string | null {
   const { label } = list;
   if (label !== null && !(isObject(label) && typeof label.id === "string")) return null;
   const labelKey = label === null ? null : [label.id, label.title, label.color];
-  return JSON.stringify([list.listType, list.title, list.position, labelKey, list.issuesCount]);
+  return JSON.stringify([list.listType, list.title, list.position, labelKey]);
 }

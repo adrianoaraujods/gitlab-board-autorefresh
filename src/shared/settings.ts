@@ -17,6 +17,8 @@ export interface Settings {
   mode: TabMode;
   /** Whether a due tick reloads only when the board changed ("smart", the default) or always (v1). */
   detection: Detection;
+  /** Whether the user's own edits also reload the board (default false: they are already on screen). */
+  refreshAfterOwnEdits: boolean;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -24,6 +26,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   intervalSeconds: DEFAULT_INTERVAL_SECONDS,
   mode: "current-tab",
   detection: "smart",
+  refreshAfterOwnEdits: false,
 });
 
 export async function loadSettings(): Promise<Settings> {
@@ -34,6 +37,7 @@ export async function loadSettings(): Promise<Settings> {
     intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds),
     mode: normalizeTabMode(settings.mode),
     detection: normalizeDetection(settings.detection),
+    refreshAfterOwnEdits: settings.refreshAfterOwnEdits === true,
   };
 }
 
