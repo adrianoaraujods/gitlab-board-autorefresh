@@ -11,11 +11,14 @@
  *    waiting for `nextDueAt`, or due.
  * 3. `realise` turns the plan into commands by diffing it against what was
  *    already commanded (timer, badge), so commands are only emitted on change.
- *    A due plan runs `onDue`, which checks for blockers and then reloads.
+ *    A due plan runs `onDue`, which walks the pre-reload checks and then reloads.
  *
  * A due reload first asks the adapter to run the Blocker Detector
- * (`check-blockers`) and reloads only once it answers `blockers-checked` with
- * no reasons (#4).
+ * (`check-blockers`, #4). Once it answers `blockers-checked` with no reasons,
+ * the adapter checks the server is reachable (`check-reachability`, #8) and
+ * runs the Blocker Detector again, answering `reachability-checked`. The
+ * reload goes ahead only if the tab is still due by then: focus, a pause or a
+ * new blocker during the check aborts it, and the scheduler carries on.
  *
  * Extending (tickets #5–#8): add an event to `SchedulerEvent` and handle it in
  * `applyEvent`; add input fields to `SchedulerState`; add a halt rule to
@@ -94,11 +97,14 @@ export interface SchedulerState {
   active: boolean;
   persisted: PersistedSchedulerState;
   /**
-   * The blocker check for the due reload: `idle` when none is outstanding,
-   * `pending` once `check-blockers` was commanded, `clear` when it answered
-   * with no reasons (the reload may go ahead in this transition only).
+   * How far the due reload got through its checks: `idle` when none is
+   * outstanding; `blockers-pending` once `check-blockers` was commanded;
+   * `blockers-clear` when it answered with no reasons; `reachability-pending`
+   * once `check-reachability` was commanded; `ready` when the server answered
+   * and nothing blocks (the reload goes ahead if the tab is still due). Any
+   * plan other than due resets it, so a late answer is ignored.
    */
-  blockerCheck: "idle" | "pending" | "clear";
+  reloadCheck: "idle" | "blockers-pending" | "blockers-clear" | "reachability-pending" | "ready";
   /** The last tick skipped because something blocked the reload (when, and what blocked it), or `null`. */
   blocked: { at: number; reasons: readonly BlockerReason[] } | null;
   /** What has already been commanded, so `realise` can emit only changes. */
@@ -131,12 +137,17 @@ export type SchedulerEvent =
   | { type: "visibility-changed"; visible: boolean }
   | { type: "tab-activity-changed"; active: boolean }
   | { type: "timer-fired" }
-  /** The commanded reload could not be carried out (for example, the server is unreachable); the page stays. */
-  | { type: "reload-failed" }
   | { type: "settings-changed"; settings: Partial<SchedulerSettings> }
   | { type: "pause-toggled"; paused: boolean }
   /** The adapter's answer to `check-blockers`: what the Blocker Detector found (empty when nothing blocks). */
-  | { type: "blockers-checked"; reasons: readonly BlockerReason[] };
+  | { type: "blockers-checked"; reasons: readonly BlockerReason[] }
+  /**
+   * The adapter's answer to `check-reachability`: the server could not be
+   * reached (the page stays), or it answered and the Blocker Detector, run
+   * again, found `reasons` (empty when nothing blocks).
+   */
+  | { type: "reachability-checked"; reachable: false }
+  | { type: "reachability-checked"; reachable: true; reasons: readonly BlockerReason[] };
 
 /**
  * `board`: an issue board loaded. `sign-in`: the tab landed on the sign-in
@@ -151,6 +162,8 @@ export type SchedulerCommand =
   | { type: "cancel-timer" }
   /** Run the Blocker Detector and answer with a `blockers-checked` event. */
   | { type: "check-blockers" }
+  /** Check the server is reachable, run the Blocker Detector again, and answer with a `reachability-checked` event. */
+  | { type: "check-reachability" }
   | ({ type: "set-badge" } & SchedulerStatus)
   /** Store this for the next page load of the tab (see `PersistedSchedulerState`). */
   | { type: "persist"; state: PersistedSchedulerState };
@@ -180,7 +193,7 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     visible: true,
     active: true,
     persisted: { lastReloadAt: null },
-    blockerCheck: "idle",
+    reloadCheck: "idle",
     blocked: null,
     commanded: { timerDueAt: null, status: null },
   };
@@ -227,19 +240,27 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return { ...state, active: event.active };
     case "timer-fired":
       return { ...state, commanded: { ...state.commanded, timerDueAt: null } };
-    case "reload-failed":
-      return { ...state, phase: "running", persisted: withFailures(state.persisted, failures(state) + 1) };
     case "settings-changed":
       return { ...state, settings: { ...state.settings, ...event.settings } };
     case "blockers-checked":
       // An answer nobody is waiting for any more (the plan changed meanwhile) is stale.
-      if (state.blockerCheck !== "pending") return state;
-      return event.reasons.length === 0
-        ? { ...state, blockerCheck: "clear" }
-        : { ...state, blockerCheck: "idle", blocked: { at: now, reasons: [...event.reasons] } };
+      if (state.reloadCheck !== "blockers-pending") return state;
+      return event.reasons.length === 0 ? { ...state, reloadCheck: "blockers-clear" } : blockedBy(state, event.reasons, now);
+    case "reachability-checked":
+      if (state.reloadCheck !== "reachability-pending") return state;
+      if (!event.reachable) {
+        // The backoff runs from the failed check, so a slow timeout doesn't eat into it.
+        const persisted = { ...state.persisted, lastReloadAt: now };
+        return { ...state, reloadCheck: "idle", persisted: withFailures(persisted, failures(state) + 1) };
+      }
+      return event.reasons.length === 0 ? { ...state, reloadCheck: "ready" } : blockedBy(state, event.reasons, now);
     case "pause-toggled":
       return { ...state, persisted: { ...state.persisted, paused: event.paused } };
   }
+}
+
+function blockedBy(state: SchedulerState, reasons: readonly BlockerReason[], now: number): SchedulerState {
+  return { ...state, reloadCheck: "idle", blocked: { at: now, reasons: [...reasons] } };
 }
 
 function failures(state: SchedulerState): number {
@@ -327,32 +348,36 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
   }
 }
 
-/** The reload is due: check for blockers first, and reload once nothing blocks. */
+/** The reload is due: run the next pre-reload check, and reload once they have all passed. */
 export function onDue(state: SchedulerState, now: number): Transition {
-  if (state.blockerCheck === "pending") return { state, commands: [] };
-  if (state.blockerCheck === "idle") {
-    const commands: SchedulerCommand[] = [];
-    if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
-    commands.push({ type: "check-blockers" });
-    return { state: { ...state, blockerCheck: "pending", commanded: { ...state.commanded, timerDueAt: null } }, commands };
-  }
-  const persisted = { ...state.persisted, lastReloadAt: now };
+  const step = DUE_STEPS[state.reloadCheck];
+  if (step === null) return { state, commands: [] }; // An answer is outstanding.
   const commands: SchedulerCommand[] = [];
   if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
+  const commanded = { ...state.commanded, timerDueAt: null };
+  if (step !== "reload") {
+    commands.push({ type: step.command });
+    return { state: { ...state, reloadCheck: step.next, commanded }, commands };
+  }
+  const persisted = { ...state.persisted, lastReloadAt: now };
   commands.push({ type: "persist", state: persisted }, { type: "reload" });
   return {
-    state: {
-      ...state,
-      phase: "reloading",
-      persisted,
-      // A reload that fails (#8) comes back to "running" and needs a fresh blocker check next time.
-      blockerCheck: "idle",
-      blocked: null,
-      commanded: { ...state.commanded, timerDueAt: null },
-    },
+    state: { ...state, phase: "reloading", persisted, reloadCheck: "idle", blocked: null, commanded },
     commands,
   };
 }
+
+/** What a due plan does at each check stage: command the next check, wait (`null`), or reload. */
+const DUE_STEPS: Record<
+  SchedulerState["reloadCheck"],
+  { command: "check-blockers" | "check-reachability"; next: SchedulerState["reloadCheck"] } | "reload" | null
+> = {
+  idle: { command: "check-blockers", next: "blockers-pending" },
+  "blockers-pending": null,
+  "blockers-clear": { command: "check-reachability", next: "reachability-pending" },
+  "reachability-pending": null,
+  ready: "reload",
+};
 
 /** Brings the timer and badge in line with what the plan wants, emitting only changes. */
 function sync(state: SchedulerState, timerDueAt: number | null, status: SchedulerStatus, now: number): Transition {
@@ -365,7 +390,7 @@ function sync(state: SchedulerState, timerDueAt: number | null, status: Schedule
     commands.push({ type: "set-badge", ...status });
   }
   // Not due any more: an outstanding or passed blocker check no longer applies.
-  return { state: { ...state, blockerCheck: "idle", commanded: { timerDueAt, status } }, commands };
+  return { state: { ...state, reloadCheck: "idle", commanded: { timerDueAt, status } }, commands };
 }
 
 function sameStatus(a: SchedulerStatus | null, b: SchedulerStatus): boolean {

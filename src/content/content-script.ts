@@ -15,12 +15,14 @@
  * - sign-in page in a tab that was refreshing a board → `page-loaded` sign-in;
  * - board URL whose document is not a board (HTTP error page) → `page-loaded` error.
  * A server that can't be reached at all shows Chrome's own error page, where no
- * content script runs, so each reload is preceded by a cheap HEAD request; if
- * that fails the page stays and `reload-failed` is reported instead.
+ * content script runs, so each reload is preceded by a cheap HEAD request
+ * (`check-reachability`); if that fails the page stays and the scheduler
+ * backs off.
  *
  * It runs the Blocker Detector when the scheduler asks (#4). On a due tick
- * the order is: blocker check → (if clear) HEAD reachability check → save the
- * scroll snapshot → reload.
+ * the order is: blocker check → (if clear) HEAD reachability check plus a
+ * second blocker check → (if the scheduler still wants it) save the scroll
+ * snapshot → reload.
  */
 import { detectBlockers } from "../core/blocker-detector";
 import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
@@ -56,8 +58,18 @@ function dispatch(event: SchedulerEvent): void {
 
 function run(command: SchedulerCommand): void {
   switch (command.type) {
+    case "check-reachability":
+      void checkReachability().then((reachable) =>
+        dispatch(
+          reachable
+            ? { type: "reachability-checked", reachable, reasons: [...detectBlockers(document)] }
+            : { type: "reachability-checked", reachable },
+        ),
+      );
+      return;
     case "reload":
-      void reloadIfReachable();
+      saveScroll();
+      location.reload();
       return;
     case "schedule-timer":
       clearTimeout(timer);
@@ -89,7 +101,8 @@ function run(command: SchedulerCommand): void {
 /** How long the pre-reload reachability check may take before it counts as failed. */
 const PREFLIGHT_TIMEOUT_MS = 30_000;
 
-async function reloadIfReachable(): Promise<void> {
+/** Whether the server answers the board URL; a network error or timeout means it is unreachable. */
+async function checkReachability(): Promise<boolean> {
   try {
     const response = await fetch(location.href, {
       method: "HEAD",
@@ -98,15 +111,10 @@ async function reloadIfReachable(): Promise<void> {
       signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
     });
     // A redirect to the sign-in page ends on a 200; reloading then lands there and is reported from that page.
-    if (response.ok) {
-      saveScroll();
-      location.reload();
-      return;
-    }
+    return response.ok;
   } catch {
-    // Network error or timeout: the server is unreachable.
+    return false;
   }
-  dispatch({ type: "reload-failed" });
 }
 
 /**
