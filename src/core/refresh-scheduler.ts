@@ -20,13 +20,24 @@
  * reload goes ahead only if the tab is still due by then: focus, a pause or a
  * new blocker during the check aborts it, and the scheduler carries on.
  *
- * Extending (tickets #5–#8): add an event to `SchedulerEvent` and handle it in
+ * Smart detection (#11): with `detection: "smart"` on a loaded board, a due
+ * tick first asks the adapter whether the board changed (`check-changes`,
+ * answered `changes-checked` with the Change Detector's result). Nothing
+ * changed: no reload, and the next check is an interval later. A change, a
+ * response detection can't read or a failed request: the v1 checks above,
+ * then the reload. The baseline fingerprint is taken as soon as a board loads
+ * and kept in the persisted state.
+ *
+ * Extending: add an event to `SchedulerEvent` and handle it in
  * `applyEvent`; add input fields to `SchedulerState`; add a halt rule to
  * `HALT_RULES`; adjust `nextDueAt` (backoff). Add commands to
- * `SchedulerCommand`.
+ * `SchedulerCommand`. New detection results (#13–#15) are handled in
+ * `changesChecked`; a different way to apply a change (#17) replaces the
+ * `reload` step of `dueStep`.
  */
 import type { BadgeState } from "./badge";
 import type { BlockerReason } from "./blocker-detector";
+import type { BoardFingerprint, ChangeDetection } from "./change-detector";
 
 /**
  * Which board tabs refresh: only the visible, active tab of each window
@@ -39,9 +50,23 @@ export function normalizeTabMode(value: unknown): TabMode {
   return value === "all-tabs" ? "all-tabs" : "current-tab";
 }
 
+/**
+ * How a due tick refreshes (#11): "smart" first asks the Change Detector
+ * whether the board changed and reloads only if it did; "always-reload" is
+ * the v1 blind reload every interval.
+ */
+export type Detection = "smart" | "always-reload";
+
+/** Reads a stored or submitted detection setting; anything but "always-reload" is the default, "smart". */
+export function normalizeDetection(value: unknown): Detection {
+  return value === "always-reload" ? "always-reload" : "smart";
+}
+
 export interface SchedulerSettings {
   intervalMs: number;
   mode: TabMode;
+  /** Left out: "always-reload" (v1). The extension's settings default to "smart". */
+  detection?: Detection;
 }
 
 /**
@@ -60,6 +85,12 @@ export interface PersistedSchedulerState {
    * pause flag and the adapter merges it into `restored`).
    */
   paused?: boolean;
+  /**
+   * Smart detection: the board's fingerprint the next check compares with;
+   * absent until one is taken. A board load drops the restored one and takes
+   * a fresh one, since the reloaded page shows the board as it is now.
+   */
+  baseline?: BoardFingerprint;
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
@@ -96,20 +127,22 @@ export interface SchedulerState {
   windowFocused: boolean;
   /** The page loaded in the tab is the sign-in page: the session has expired. */
   signedOut: boolean;
+  /** The page loaded in the tab is a board (not the sign-in or an error page): smart detection applies. */
+  boardLoaded: boolean;
   /** Whether the page is visible (`document.visibilityState`). */
   visible: boolean;
   /** Whether the tab is the active tab of its window. */
   active: boolean;
   persisted: PersistedSchedulerState;
+  /** How far the due tick got through its checks (see `ReloadCheck`). */
+  reloadCheck: ReloadCheck;
   /**
-   * How far the due reload got through its checks: `idle` when none is
-   * outstanding; `blockers-pending` once `check-blockers` was commanded;
-   * `blockers-clear` when it answered with no reasons; `reachability-pending`
-   * once `check-reachability` was commanded; `ready` when the server answered
-   * and nothing blocks (the reload goes ahead if the tab is still due). Any
-   * plan other than due resets it, so a late answer is ignored.
+   * Smart detection: a `check-changes` was commanded only to take the
+   * baseline (not for a due tick), and its answer is outstanding.
    */
-  reloadCheck: "idle" | "blockers-pending" | "blockers-clear" | "reachability-pending" | "ready";
+  baselinePending: boolean;
+  /** Smart detection: epoch ms of the last check that found nothing to reload, or `null`. */
+  lastCheckAt: number | null;
   /** The last tick skipped because something blocked the reload (when, and what blocked it), or `null`. */
   blocked: { at: number; reasons: readonly BlockerReason[] } | null;
   /** What has already been commanded, so `realise` can emit only changes. */
@@ -119,6 +152,26 @@ export interface SchedulerState {
     status: SchedulerStatus | null;
   };
 }
+
+/**
+ * How far the due tick got through its checks: `idle` when none is
+ * outstanding; in smart detection, `changes-pending` once `check-changes`
+ * was commanded and `changed` when the board changed (or detection could not
+ * tell), so a reload goes ahead; `blockers-pending` once `check-blockers` was
+ * commanded; `blockers-clear` when it answered with no reasons;
+ * `reachability-pending` once `check-reachability` was commanded; `ready`
+ * when the server answered and nothing blocks (the reload goes ahead if the
+ * tab is still due). Any plan other than due resets it, so a late answer is
+ * ignored.
+ */
+export type ReloadCheck =
+  | "idle"
+  | "changes-pending"
+  | "changed"
+  | "blockers-pending"
+  | "blockers-clear"
+  | "reachability-pending"
+  | "ready";
 
 export type SchedulerEvent =
   | {
@@ -152,7 +205,13 @@ export type SchedulerEvent =
    * again, found `reasons` (empty when nothing blocks).
    */
   | { type: "reachability-checked"; reachable: false }
-  | { type: "reachability-checked"; reachable: true; reasons: readonly BlockerReason[] };
+  | { type: "reachability-checked"; reachable: true; reasons: readonly BlockerReason[] }
+  /**
+   * The adapter's answer to `check-changes`: the request failed (network
+   * error, timeout, an HTTP error), or the Change Detector's result.
+   */
+  | { type: "changes-checked"; reachable: false }
+  | { type: "changes-checked"; reachable: true; detection: ChangeDetection };
 
 /**
  * `board`: an issue board loaded. `sign-in`: the tab landed on the sign-in
@@ -169,6 +228,12 @@ export type SchedulerCommand =
   | { type: "check-blockers" }
   /** Check the server is reachable, run the Blocker Detector again, and answer with a `reachability-checked` event. */
   | { type: "check-reachability" }
+  /**
+   * Smart detection: fetch the board's fingerprint, compare it with
+   * `baseline` (`null`: none yet, the answer becomes the baseline) and answer
+   * with a `changes-checked` event.
+   */
+  | { type: "check-changes"; baseline: BoardFingerprint | null }
   | ({ type: "set-badge" } & SchedulerStatus)
   /** Store this for the next page load of the tab (see `PersistedSchedulerState`). */
   | { type: "persist"; state: PersistedSchedulerState };
@@ -195,10 +260,13 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     focused: false,
     windowFocused: false,
     signedOut: false,
+    boardLoaded: false,
     visible: true,
     active: true,
     persisted: { lastReloadAt: null },
     reloadCheck: "idle",
+    baselinePending: false,
+    lastCheckAt: null,
     blocked: null,
     commanded: { timerDueAt: null, status: null },
   };
@@ -206,12 +274,34 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
 
 export function transition(state: SchedulerState, event: SchedulerEvent, now: number): Transition {
   const applied = applyEvent(state, event, now);
-  const result = realise(applied, plan(applied, now), now);
+  const result = takeBaselineIfMissing(realise(applied, plan(applied, now), now), event);
   // A new failure count is stored at once, so the backoff survives the error page being reloaded.
   if (failures(applied) !== failures(state) && !result.commands.some((c) => c.type === "persist")) {
     result.commands.unshift({ type: "persist", state: applied.persisted });
   }
   return result;
+}
+
+/**
+ * Smart detection takes the baseline as soon as a board loads (or detection is
+ * switched to smart), whatever the plan, so a change made while the window is
+ * focused still shows up at the first check after it. A due check already
+ * takes it.
+ */
+function takeBaselineIfMissing(result: Transition, event: SchedulerEvent): Transition {
+  const { state } = result;
+  if (event.type !== "page-loaded" && event.type !== "settings-changed") return result;
+  if (state.phase !== "running" || !detecting(state) || state.persisted.baseline !== undefined) return result;
+  if (state.baselinePending || state.reloadCheck === "changes-pending") return result;
+  return {
+    state: { ...state, baselinePending: true },
+    commands: [...result.commands, { type: "check-changes", baseline: null }],
+  };
+}
+
+/** Whether due ticks go through smart detection: the setting is on and a board is loaded. */
+function detecting(state: SchedulerState): boolean {
+  return state.settings.detection === "smart" && state.boardLoaded;
 }
 
 // Step 1 ----------------------------------------------------------------------
@@ -220,17 +310,24 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
   switch (event.type) {
     case "page-loaded": {
       const { consecutiveFailures = 0, ...restored }: Partial<PersistedSchedulerState> = event.restored ?? {};
-      const base = { ...state.persisted, ...restored, lastReloadAt: restored.lastReloadAt ?? now };
+      const page = event.page ?? "board";
+      const merged = { ...state.persisted, ...restored, lastReloadAt: restored.lastReloadAt ?? now };
+      // A full board load resets the baseline; an error or sign-in page keeps it.
+      const { baseline: _dropped, ...withoutBaseline } = merged;
+      const base = page === "board" ? withoutBaseline : merged;
       return {
         ...state,
         phase: "running",
         focused: event.focused,
         windowFocused: event.windowFocused ?? false,
-        signedOut: event.page === "sign-in",
+        signedOut: page === "sign-in",
+        boardLoaded: page === "board",
+        baselinePending: false,
+        lastCheckAt: null,
         visible: event.visible ?? true,
         active: event.active ?? true,
         // An error page counts one more failure; any other page ends the run of failures.
-        persisted: withFailures(base, event.page === "error" ? consecutiveFailures + 1 : 0),
+        persisted: withFailures(base, page === "error" ? consecutiveFailures + 1 : 0),
         // A new page has no timer and a fresh badge.
         commanded: { timerDueAt: null, status: null },
       };
@@ -261,6 +358,37 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return event.reasons.length === 0 ? { ...state, reloadCheck: "ready" } : blockedBy(state, event.reasons, now);
     case "pause-toggled":
       return { ...state, persisted: { ...state.persisted, paused: event.paused } };
+    case "changes-checked":
+      return changesChecked(state, event, now);
+  }
+}
+
+function changesChecked(
+  state: SchedulerState,
+  event: Extract<SchedulerEvent, { type: "changes-checked" }>,
+  now: number,
+): SchedulerState {
+  const detection = event.reachable ? event.detection : null;
+  if (state.baselinePending) {
+    // Only taking the baseline: no timing or reload decision hangs on it.
+    const taken = detection !== null && detection.kind !== "invalid";
+    const persisted = taken ? { ...state.persisted, baseline: detection.fingerprint } : state.persisted;
+    return { ...state, baselinePending: false, persisted };
+  }
+  if (state.reloadCheck !== "changes-pending") return state;
+  switch (detection?.kind) {
+    case "unchanged": {
+      // The server answered, so earlier failures are over; the next check is an interval from now.
+      const persisted = withFailures({ ...state.persisted, baseline: detection.fingerprint }, 0);
+      return { ...state, reloadCheck: "idle", lastCheckAt: now, blocked: null, persisted };
+    }
+    case "remote":
+      // Keep the old baseline: if the reload is blocked, the next check still sees the change.
+      return { ...state, reloadCheck: "changed", persisted: withFailures(state.persisted, 0) };
+    default:
+      // A failed request or a response detection can't read: reload like v1. A failed
+      // request then fails the reachability check too, and backs off.
+      return { ...state, reloadCheck: "changed" };
   }
 }
 
@@ -325,7 +453,8 @@ export const MAX_BACKOFF_MS = 5 * 60 * 1000;
 
 /**
  * When the next reload is due, as epoch ms: a (backed-off) interval after the
- * last reload, or one interval after the last blocked tick, whichever is later.
+ * last reload, one interval after the last smart check that found nothing to
+ * reload, or one interval after the last blocked tick, whichever is latest.
  * After failures the interval doubles per failure, capped.
  */
 export function nextDueAt(state: SchedulerState): number {
@@ -333,8 +462,9 @@ export function nextDueAt(state: SchedulerState): number {
   const { intervalMs } = state.settings;
   const backoff = Math.min(intervalMs * 2 ** failures(state), Math.max(MAX_BACKOFF_MS, intervalMs));
   const afterReload = lastReloadAt === null ? -Infinity : lastReloadAt + backoff;
+  const afterCheck = state.lastCheckAt === null ? -Infinity : state.lastCheckAt + intervalMs;
   const afterBlocked = state.blocked === null ? -Infinity : state.blocked.at + intervalMs;
-  return Math.max(afterReload, afterBlocked);
+  return Math.max(afterReload, afterCheck, afterBlocked);
 }
 
 // Step 3 ----------------------------------------------------------------------
@@ -355,13 +485,15 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
 
 /** The reload is due: run the next pre-reload check, and reload once they have all passed. */
 export function onDue(state: SchedulerState, now: number): Transition {
-  const step = DUE_STEPS[state.reloadCheck];
+  // A baseline check is outstanding: its answer decides nothing, but wait for it so the due check compares with it.
+  if (state.baselinePending) return { state, commands: [] };
+  const step = dueStep(state);
   if (step === null) return { state, commands: [] }; // An answer is outstanding.
   const commands: SchedulerCommand[] = [];
   if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
   const commanded = { ...state.commanded, timerDueAt: null };
   if (step !== "reload") {
-    commands.push({ type: step.command });
+    commands.push(step.command);
     return { state: { ...state, reloadCheck: step.next, commanded }, commands };
   }
   const persisted = { ...state.persisted, lastReloadAt: now };
@@ -372,14 +504,26 @@ export function onDue(state: SchedulerState, now: number): Transition {
   };
 }
 
-/** What a due plan does at each check stage: command the next check, wait (`null`), or reload. */
-const DUE_STEPS: Record<
-  SchedulerState["reloadCheck"],
-  { command: "check-blockers" | "check-reachability"; next: SchedulerState["reloadCheck"] } | "reload" | null
-> = {
-  idle: { command: "check-blockers", next: "blockers-pending" },
+type DueStep = { command: SchedulerCommand; next: ReloadCheck } | "reload" | null;
+
+/**
+ * What a due plan does at each check stage: command the next check, wait
+ * (`null`), or reload. In smart detection a due tick first asks whether the
+ * board changed; `changed` then goes through the same checks as a v1 tick.
+ */
+function dueStep(state: SchedulerState): DueStep {
+  if (state.reloadCheck === "idle" && detecting(state)) {
+    return { command: { type: "check-changes", baseline: state.persisted.baseline ?? null }, next: "changes-pending" };
+  }
+  return DUE_STEPS[state.reloadCheck];
+}
+
+const DUE_STEPS: Record<ReloadCheck, DueStep> = {
+  idle: { command: { type: "check-blockers" }, next: "blockers-pending" },
+  "changes-pending": null,
+  changed: { command: { type: "check-blockers" }, next: "blockers-pending" },
   "blockers-pending": null,
-  "blockers-clear": { command: "check-reachability", next: "reachability-pending" },
+  "blockers-clear": { command: { type: "check-reachability" }, next: "reachability-pending" },
   "reachability-pending": null,
   ready: "reload",
 };
