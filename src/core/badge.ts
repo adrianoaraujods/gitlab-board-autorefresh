@@ -1,6 +1,7 @@
 /**
- * The toolbar badge states (spec #1): "idle" (grey) and "polling" (green).
- * Later tickets add "blocked" (yellow, #4) and "error" (red, #8). The Refresh
+ * The toolbar badge states (spec #1): "idle" (grey), "polling" (green) and
+ * "error" (red: signed out or reloads failing, #8).
+ * Ticket #4 adds "blocked" (yellow). The Refresh
  * Scheduler emits them as set-badge commands.
  */
-export type BadgeState = "idle" | "polling";
+export type BadgeState = "idle" | "polling" | "error";

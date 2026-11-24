@@ -19,5 +19,5 @@ onSettingsChanged((keys) => {
 chrome.runtime.onMessage.addListener((message: ContentToBackgroundMessage, sender) => {
   const tabId = sender.tab?.id;
   if (tabId === undefined) return;
-  if (message.type === "set-badge") void setTabBadge(tabId, message.badge);
+  if (message.type === "set-badge") void setTabBadge(tabId, message.badge, message.reason);
 });
