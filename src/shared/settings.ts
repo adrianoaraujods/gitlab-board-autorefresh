@@ -1,6 +1,12 @@
 /** Settings stored in chrome.storage.sync, with defaults in DEFAULT_SETTINGS. */
 import { DEFAULT_INTERVAL_SECONDS, normalizeIntervalSeconds } from "../core/refresh-interval";
-import { normalizeTabMode, type SchedulerSettings, type TabMode } from "../core/refresh-scheduler";
+import {
+  normalizeDetection,
+  normalizeTabMode,
+  type Detection,
+  type SchedulerSettings,
+  type TabMode,
+} from "../core/refresh-scheduler";
 
 export interface Settings {
   /** Configured origins, e.g. "https://gitlab.com". */
@@ -9,12 +15,15 @@ export interface Settings {
   intervalSeconds: number;
   /** Which board tabs refresh (default "current-tab"). */
   mode: TabMode;
+  /** Whether a due tick reloads only when the board changed ("smart", the default) or always (v1). */
+  detection: Detection;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   domains: ["https://gitlab.com"],
   intervalSeconds: DEFAULT_INTERVAL_SECONDS,
   mode: "current-tab",
+  detection: "smart",
 });
 
 export async function loadSettings(): Promise<Settings> {
@@ -24,12 +33,17 @@ export async function loadSettings(): Promise<Settings> {
     ...settings,
     intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds),
     mode: normalizeTabMode(settings.mode),
+    detection: normalizeDetection(settings.detection),
   };
 }
 
 /** The Refresh Scheduler's view of the settings. */
-export function toSchedulerSettings({ intervalSeconds, mode }: Pick<Settings, "intervalSeconds" | "mode">): SchedulerSettings {
-  return { intervalMs: intervalSeconds * 1000, mode };
+export function toSchedulerSettings({
+  intervalSeconds,
+  mode,
+  detection,
+}: Pick<Settings, "intervalSeconds" | "mode" | "detection">): SchedulerSettings {
+  return { intervalMs: intervalSeconds * 1000, mode, detection };
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {

@@ -1,10 +1,10 @@
 /**
- * Options Page. Domain list (add, remove, validate, grant), refresh interval
- * and tab mode.
+ * Options Page. Domain list (add, remove, validate, grant), refresh interval,
+ * tab mode and detection.
  */
 import { originMatchPattern, parseDomainOrigin } from "../core/domain-origin";
 import { parseIntervalSeconds } from "../core/refresh-interval";
-import { normalizeTabMode } from "../core/refresh-scheduler";
+import { normalizeDetection, normalizeTabMode } from "../core/refresh-scheduler";
 import { loadSettings, onSettingsChanged, saveSettings } from "../shared/settings";
 
 const list = document.querySelector<HTMLUListElement>("#domain-list")!;
@@ -120,6 +120,28 @@ modeFieldset.addEventListener("change", (event) => {
     modeError.textContent = errorMessage(error);
     modeError.hidden = false;
     void renderMode();
+void renderDetection();
+  });
+});
+
+const detectionFieldset = document.querySelector<HTMLFieldSetElement>("#detection-fieldset")!;
+const detectionError = document.querySelector<HTMLParagraphElement>("#detection-error")!;
+
+async function renderDetection(): Promise<void> {
+  const { detection } = await loadSettings();
+  for (const radio of detectionFieldset.querySelectorAll<HTMLInputElement>('input[name="detection"]')) {
+    radio.checked = radio.value === detection;
+  }
+}
+
+detectionFieldset.addEventListener("change", (event) => {
+  const radio = event.target as HTMLInputElement;
+  const detection = normalizeDetection(radio.value);
+  detectionError.hidden = true;
+  saveSettings({ detection }).catch((error: unknown) => {
+    detectionError.textContent = errorMessage(error);
+    detectionError.hidden = false;
+    void renderDetection();
   });
 });
 
@@ -127,9 +149,12 @@ onSettingsChanged((keys) => {
   if (keys.includes("domains")) void render();
   if (keys.includes("intervalSeconds")) void renderInterval();
   if (keys.includes("mode")) void renderMode();
+void renderDetection();
+  if (keys.includes("detection")) void renderDetection();
 });
 chrome.permissions.onAdded.addListener(() => void render());
 chrome.permissions.onRemoved.addListener(() => void render());
 void render();
 void renderInterval();
 void renderMode();
+void renderDetection();

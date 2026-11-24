@@ -28,9 +28,9 @@
 
       <section aria-labelledby="interval-heading">
         <h2 id="interval-heading">Refresh interval</h2>
-        <p class="hint">How often an unfocused board reloads. Minimum 10 seconds.</p>
+        <p class="hint">How often an unfocused board checks for changes (or reloads, with Always reload). Minimum 10 seconds.</p>
         <form id="interval-form" novalidate>
-          <label for="interval-input">Seconds between reloads</label>
+          <label for="interval-input">Seconds between checks</label>
           <div class="row">
             <input id="interval-input" type="number" min="10" step="1" inputmode="numeric" />
             <button type="submit">Save</button>
@@ -54,6 +54,25 @@
           </label>
         </fieldset>
         <p id="mode-error" class="error" role="alert" hidden></p>
+      </section>
+
+      <section aria-labelledby="detection-heading">
+        <h2 id="detection-heading">Detection</h2>
+        <fieldset id="detection-fieldset">
+          <legend class="hint">What an unfocused board does when the interval is up.</legend>
+          <label class="choice">
+            <input type="radio" name="detection" value="smart" />
+            <span>
+              <strong>Smart</strong>: checks for changes with one small request and reloads only when the board
+              changed.
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="detection" value="always-reload" />
+            <span><strong>Always reload</strong>: reloads every interval, changed or not.</span>
+          </label>
+        </fieldset>
+        <p id="detection-error" class="error" role="alert" hidden></p>
       </section>
     </main>
     <script src="options.js"></script>
