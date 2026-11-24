@@ -18,6 +18,7 @@ const REASON_TEXT: Record<string, string> = {
   paused: "Paused for this tab.",
   focused: "The window has focus, so the board won't reload.",
   polling: "The window is unfocused; the board reloads on schedule.",
+  "not-current-tab": "Only the visible tab of each window refreshes (\"Current tab\" mode).",
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
