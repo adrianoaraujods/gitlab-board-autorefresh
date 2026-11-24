@@ -32,7 +32,9 @@
  * `applyEvent`; add input fields to `SchedulerState`; add a halt rule to
  * `HALT_RULES`; adjust `nextDueAt` (backoff). Add commands to
  * `SchedulerCommand`. New detection results (#13–#15) are handled in
- * `changesChecked`; a different way to apply a change (#17) replaces the
+ * `changesChecked`. Detection resilience (#13): `invalid` marks the tab
+ * `degraded` (reloads like v1, checks go on, a valid answer recovers),
+ * `signed-out` halts like the sign-in page; a different way to apply a change (#17) replaces the
  * `reload` step of `dueStep`.
  *
  * Update in place (#17): in smart detection a change found by the check is
@@ -67,9 +69,21 @@ export function normalizeDetection(value: unknown): Detection {
   return value === "always-reload" ? "always-reload" : "smart";
 }
 
+/** Default minutes between safety-net full reloads (#16). */
+export const DEFAULT_SAFETY_NET_MINUTES = 15;
+
+/** Reads a stored or submitted safety-net setting: whole minutes, 0 = off; anything else is the default. */
+export function normalizeSafetyNetMinutes(value: unknown): number {
+  const minutes = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0) return DEFAULT_SAFETY_NET_MINUTES;
+  return Math.floor(minutes);
+}
+
 export interface SchedulerSettings {
   intervalMs: number;
   mode: TabMode;
+  /** Smart mode: minutes since the last full load after which a due tick reloads whatever detection says; 0 or left out: off. */
+  safetyNetMinutes?: number;
   /** Left out: "always-reload" (v1). The extension's settings default to "smart". */
   detection?: Detection;
 }
@@ -96,6 +110,12 @@ export interface PersistedSchedulerState {
    * a fresh one, since the reloaded page shows the board as it is now.
    */
   baseline?: BoardFingerprint;
+  /**
+   * Smart detection got a response it can't read (#13): the tab reloads like
+   * "Always reload" while checks go on, until one is valid again. Absent
+   * means detection works.
+   */
+  degraded?: boolean;
 }
 
 /** Why the tab is in its current status, alongside the badge colour. */
@@ -106,7 +126,9 @@ export type StatusReason =
   | "not-current-tab"
   | "blocked"
   | "signed-out"
-  | "reload-failed";
+  | "reload-failed"
+  /** Smart detection is degraded (#13): the board reloads on every interval. */
+  | "detection-unavailable";
 
 export interface SchedulerStatus {
   badge: BadgeState;
@@ -400,15 +422,20 @@ function changesChecked(
   const detection = event.reachable ? event.detection : null;
   if (state.baselinePending) {
     // Only taking the baseline: no timing or reload decision hangs on it.
-    const taken = detection !== null && detection.kind !== "invalid";
-    const persisted = taken ? { ...state.persisted, baseline: detection.fingerprint } : state.persisted;
-    return { ...state, baselinePending: false, persisted };
+    const next = { ...state, baselinePending: false };
+    if (detection?.kind === "signed-out") return { ...next, signedOut: true };
+    if (detection === null) return next;
+    if (detection.kind === "invalid") return { ...next, persisted: { ...state.persisted, degraded: true } };
+    return { ...next, persisted: withoutDegraded({ ...state.persisted, baseline: detection.fingerprint }) };
   }
   if (state.reloadCheck !== "changes-pending") return state;
   switch (detection?.kind) {
+    case "signed-out":
+      // Halts like the sign-in page: never a change, never a reload.
+      return { ...state, reloadCheck: "idle", signedOut: true };
     case "unchanged": {
       // The server answered, so earlier failures are over; the next check is an interval from now.
-      const persisted = withFailures({ ...state.persisted, baseline: detection.fingerprint }, 0);
+      const persisted = withFailures(withoutDegraded({ ...state.persisted, baseline: detection.fingerprint }), 0);
       return { ...state, reloadCheck: "idle", pendingApply: null, lastCheckAt: now, blocked: null, persisted };
     }
     case "remote":
@@ -417,8 +444,11 @@ function changesChecked(
         ...state,
         reloadCheck: "changed",
         pendingApply: detection.fingerprint,
-        persisted: withFailures(state.persisted, 0),
+        persisted: withFailures(withoutDegraded(state.persisted), 0),
       };
+    case "invalid":
+      // Degraded: reload like v1 now and on later ticks, checking each time until a response is valid.
+      return { ...state, reloadCheck: "changed", pendingApply: null, persisted: { ...state.persisted, degraded: true } };
     default:
       // A failed request or a response detection can't read: reload like v1. A failed
       // request then fails the reachability check too, and backs off.
@@ -428,6 +458,11 @@ function changesChecked(
 
 function blockedBy(state: SchedulerState, reasons: readonly BlockerReason[], now: number): SchedulerState {
   return { ...state, reloadCheck: "idle", blocked: { at: now, reasons: [...reasons] } };
+}
+
+function withoutDegraded(persisted: PersistedSchedulerState): PersistedSchedulerState {
+  const { degraded: _dropped, ...rest } = persisted;
+  return rest;
 }
 
 function failures(state: SchedulerState): number {
@@ -474,7 +509,8 @@ export function plan(state: SchedulerState, now: number): Plan {
 /** A skipped (blocked) tick shows yellow until the next check, even while failures back off; otherwise failing reloads show red. */
 function waitingStatus(state: SchedulerState): SchedulerStatus {
   if (state.blocked !== null) return { badge: "blocked", reason: "blocked", blockers: state.blocked.reasons };
-  return failures(state) > 0 ? FAILING : POLLING;
+  if (failures(state) > 0) return FAILING;
+  return state.persisted.degraded && detecting(state) ? { badge: "polling", reason: "detection-unavailable" } : POLLING;
 }
 
 /** A failing tab that stops for focus or tab activity keeps its red badge until a board loads; a pause still shows. */
@@ -521,7 +557,7 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
 export function onDue(state: SchedulerState, now: number): Transition {
   // A baseline check is outstanding: its answer decides nothing, but wait for it so the due check compares with it.
   if (state.baselinePending || state.applying !== null) return { state, commands: [] };
-  const step = dueStep(state);
+  const step = dueStep(state, now);
   if (step === null) return { state, commands: [] }; // An answer is outstanding.
   const commands: SchedulerCommand[] = [];
   if (state.commanded.timerDueAt !== null) commands.push({ type: "cancel-timer" });
@@ -530,7 +566,7 @@ export function onDue(state: SchedulerState, now: number): Transition {
     commands.push(step.command);
     return { state: { ...state, reloadCheck: step.next, commanded }, commands };
   }
-  if (state.pendingApply !== null) {
+  if (state.pendingApply !== null && !safetyNetUp(state, now)) {
     commands.push({ type: "apply-changes" });
     return { state: { ...state, applying: state.pendingApply, pendingApply: null, reloadCheck: "idle", commanded }, commands };
   }
@@ -549,11 +585,18 @@ type DueStep = { command: SchedulerCommand; next: ReloadCheck } | "reload" | nul
  * (`null`), or reload. In smart detection a due tick first asks whether the
  * board changed; `changed` then goes through the same checks as a v1 tick.
  */
-function dueStep(state: SchedulerState): DueStep {
-  if (state.reloadCheck === "idle" && detecting(state)) {
+function dueStep(state: SchedulerState, now: number): DueStep {
+  if (state.reloadCheck === "idle" && detecting(state) && !safetyNetUp(state, now)) {
     return { command: { type: "check-changes", baseline: state.persisted.baseline ?? null }, next: "changes-pending" };
   }
   return DUE_STEPS[state.reloadCheck];
+}
+
+/** Smart mode's safety net (#16): enough time since the last full load that this tick reloads without asking detection. */
+function safetyNetUp(state: SchedulerState, now: number): boolean {
+  const minutes = state.settings.safetyNetMinutes ?? 0;
+  const { lastReloadAt } = state.persisted;
+  return minutes > 0 && lastReloadAt !== null && now - lastReloadAt >= minutes * 60_000;
 }
 
 const DUE_STEPS: Record<ReloadCheck, DueStep> = {

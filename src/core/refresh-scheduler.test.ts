@@ -3,6 +3,7 @@ import type { BoardFingerprint, ChangeDetection } from "./change-detector";
 import {
   initialSchedulerState,
   normalizeDetection,
+  normalizeSafetyNetMinutes,
   normalizeTabMode,
   transition,
   type PersistedSchedulerState,
@@ -39,8 +40,13 @@ function reloadAt(at: number): SchedulerCommand[] {
  * Feeds events into the scheduler one at a time, threading state through, and
  * returns the commands each event produced. Tests only look at commands.
  */
-function scheduler(intervalMs = INTERVAL, mode: TabMode = "current-tab", detection?: Detection) {
-  let state: SchedulerState = initialSchedulerState({ intervalMs, mode, ...(detection && { detection }) });
+function scheduler(intervalMs = INTERVAL, mode: TabMode = "current-tab", detection?: Detection, safetyNetMinutes?: number) {
+  let state: SchedulerState = initialSchedulerState({
+    intervalMs,
+    mode,
+    ...(detection && { detection }),
+    ...(safetyNetMinutes !== undefined && { safetyNetMinutes }),
+  });
   return {
     send(event: SchedulerEvent, at: number): SchedulerCommand[] {
       const result = transition(state, event, at);
@@ -789,6 +795,7 @@ const UNCHANGED_AT_LOAD = checked({ kind: "unchanged", fingerprint: BOARD_AT_LOA
 const UNCHANGED_LATER = checked({ kind: "unchanged", fingerprint: BOARD_LATER });
 const CHANGED = checked({ kind: "remote", changedCount: 2, fingerprint: BOARD_LATER });
 const INVALID = checked({ kind: "invalid", problem: "GraphQL errors" });
+const SIGNED_OUT = checked({ kind: "signed-out" });
 const CHECK_FAILED: SchedulerEvent = { type: "changes-checked", reachable: false };
 
 function smartScheduler() {
@@ -986,6 +993,115 @@ describe("Refresh Scheduler: smart detection", () => {
     expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
   });
 
+  describe("when detection is unavailable", () => {
+    /** A smart tab whose due check at T0 + INTERVAL found an invalid response and reloaded. */
+    function degradedAfterReload() {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(INVALID, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      return { s, commands: s.send(REACHABLE, T0 + INTERVAL) };
+    }
+
+    it("remembers it across the reload", () => {
+      expect(degradedAfterReload().commands).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + INTERVAL, baseline: BOARD_AT_LOAD, degraded: true } },
+        { type: "reload" },
+      ]);
+    });
+
+    it("keeps checking, and reloads blindly while checks stay invalid", () => {
+      const s = smartScheduler();
+      const restored = { lastReloadAt: T0, degraded: true };
+      s.send({ type: "page-loaded", focused: false, restored }, T0);
+      s.send(INVALID, T0);
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-changes", baseline: null }]);
+      expect(s.send(INVALID, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
+      expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual(CHECK_REACHABILITY);
+      expect(s.send(REACHABLE, T0 + INTERVAL)).toContainEqual({ type: "reload" });
+    });
+
+    it("shows the reason in the badge status while waiting", () => {
+      const s = smartScheduler();
+      const restored = { lastReloadAt: T0, degraded: true };
+      expect(s.send({ type: "page-loaded", focused: false, restored }, T0)).toContainEqual({
+        type: "set-badge",
+        badge: "polling",
+        reason: "detection-unavailable",
+      });
+    });
+
+    it("returns to smart behaviour once a check is valid again", () => {
+      const s = smartScheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, degraded: true } }, T0);
+      s.send(INVALID, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      // A valid answer: no blind reload, and the status is back to plain polling.
+      expect(s.send(UNCHANGED_AT_LOAD, T0 + INTERVAL)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-changes", baseline: BOARD_AT_LOAD }]);
+    });
+
+    it("recovers from a valid baseline check on the next page too", () => {
+      const s = smartScheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, degraded: true } }, T0);
+      s.send(UNCHANGED_AT_LOAD, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([]);
+    });
+
+    it("doesn't affect Always reload", () => {
+      const s = scheduler(INTERVAL, "current-tab", "always-reload");
+      expect(
+        s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0, degraded: true } }, T0),
+      ).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "polling", reason: "polling" },
+      ]);
+    });
+  });
+
+  describe("when the session has expired", () => {
+    it("halts with the signed-out badge instead of reloading", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send(SIGNED_OUT, T0 + INTERVAL)).toEqual([
+        { type: "set-badge", badge: "error", reason: "signed-out" },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 10 * INTERVAL)).toEqual([]);
+    });
+
+    it("halts when the baseline check finds it", () => {
+      const s = smartScheduler();
+      s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0);
+      expect(s.send(SIGNED_OUT, T0)).toEqual([
+        { type: "cancel-timer" },
+        { type: "set-badge", badge: "error", reason: "signed-out" },
+      ]);
+    });
+  });
+
+  describe("when the check request fails", () => {
+    it("shows the red badge and doubles the wait once the server proves unreachable", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHECK_FAILED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      expect(s.send(UNREACHABLE, T0 + INTERVAL)).toContainEqual({ type: "set-badge", badge: "error", reason: "reload-failed" });
+    });
+
+    it("doesn't mark detection as unavailable", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHECK_FAILED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      const commands = s.send(REACHABLE, T0 + INTERVAL);
+      expect(JSON.stringify(commands)).not.toContain("degraded");
+    });
+  });
+
   describe("when the detection setting changes", () => {
     it("takes a baseline when switched to Smart on a loaded board", () => {
       const s = scheduler(INTERVAL, "current-tab", "always-reload");
@@ -1013,5 +1129,98 @@ describe('Refresh Scheduler: "Always reload"', () => {
     expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
     expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual(CHECK_REACHABILITY);
     expect(s.send(REACHABLE, T0 + INTERVAL)).toEqual(reloadAt(T0 + INTERVAL));
+  });
+});
+
+// Safety-net full reload (#16) --------------------------------------------------
+
+const MINUTE = 60 * SECOND;
+
+function safetyNetScheduler(safetyNetMinutes: number) {
+  return scheduler(INTERVAL, "current-tab", "smart", safetyNetMinutes);
+}
+
+/** A smart tab with a safety net whose board loaded unfocused at `at` and took BOARD_AT_LOAD as its baseline. */
+function safetyNetBoardLoadedAt(safetyNetMinutes: number, at = T0) {
+  const s = safetyNetScheduler(safetyNetMinutes);
+  s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: at } }, at);
+  s.send(UNCHANGED_AT_LOAD, at);
+  return s;
+}
+
+/** Runs unchanged smart checks every interval from `from` until just before `until`. */
+function checkUnchangedUntil(s: ReturnType<typeof scheduler>, from: number, until: number) {
+  for (let at = from; at < until; at += INTERVAL) {
+    s.send({ type: "timer-fired" }, at);
+    s.send(UNCHANGED_AT_LOAD, at);
+  }
+}
+
+describe("Refresh Scheduler: safety-net full reload", () => {
+  it("reloads on the first due tick once the safety net is up, whatever detection says", () => {
+    const s = safetyNetBoardLoadedAt(15);
+    checkUnchangedUntil(s, T0 + INTERVAL, T0 + 15 * MINUTE);
+    expect(s.send({ type: "timer-fired" }, T0 + 15 * MINUTE)).toEqual([{ type: "check-blockers" }]);
+    expect(s.send(NOTHING_BLOCKING, T0 + 15 * MINUTE)).toEqual(CHECK_REACHABILITY);
+    expect(s.send(REACHABLE, T0 + 15 * MINUTE)).toContainEqual({ type: "reload" });
+  });
+
+  it("does not reload before the safety net is up", () => {
+    const s = safetyNetBoardLoadedAt(15);
+    checkUnchangedUntil(s, T0 + INTERVAL, T0 + 15 * MINUTE - INTERVAL);
+    expect(s.send({ type: "timer-fired" }, T0 + 15 * MINUTE - INTERVAL)).toEqual([
+      { type: "check-changes", baseline: expect.anything() },
+    ]);
+  });
+
+  it("is off with 0", () => {
+    const s = safetyNetBoardLoadedAt(0);
+    checkUnchangedUntil(s, T0 + INTERVAL, T0 + 60 * MINUTE);
+    expect(s.send({ type: "timer-fired" }, T0 + 60 * MINUTE)).toEqual([
+      { type: "check-changes", baseline: expect.anything() },
+    ]);
+  });
+
+  it("is still gated by the blocker check", () => {
+    const s = safetyNetBoardLoadedAt(15);
+    checkUnchangedUntil(s, T0 + INTERVAL, T0 + 15 * MINUTE);
+    s.send({ type: "timer-fired" }, T0 + 15 * MINUTE);
+    const commands = s.send({ type: "blockers-checked", reasons: ["overlay-open"] }, T0 + 15 * MINUTE);
+    expect(commands).not.toContainEqual({ type: "reload" });
+    expect(commands).toContainEqual(expect.objectContaining({ type: "set-badge", badge: "blocked" }));
+  });
+
+  it("restarts its clock when the page loads again", () => {
+    const s = safetyNetBoardLoadedAt(15);
+    const later = T0 + 14 * MINUTE;
+    s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: later } }, later);
+    s.send(UNCHANGED_AT_LOAD, later);
+    checkUnchangedUntil(s, later + INTERVAL, T0 + 16 * MINUTE);
+    expect(s.send({ type: "timer-fired" }, T0 + 16 * MINUTE)).toEqual([
+      { type: "check-changes", baseline: expect.anything() },
+    ]);
+  });
+
+  it("does not apply in Always reload mode, which reloads every interval anyway", () => {
+    const s = scheduler(INTERVAL, "current-tab", "always-reload", 15);
+    s.send({ type: "page-loaded", focused: false, restored: { lastReloadAt: T0 } }, T0);
+    expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
+  });
+});
+
+describe("normalizeSafetyNetMinutes", () => {
+  it.each([
+    [15, 15],
+    [0, 0],
+    [30, 30],
+    [2.7, 2],
+    ["20", 20],
+    [-5, 15],
+    [Number.NaN, 15],
+    ["abc", 15],
+    [undefined, 15],
+    [null, 15],
+  ])("%j becomes %j", (value, minutes) => {
+    expect(normalizeSafetyNetMinutes(value)).toBe(minutes);
   });
 });

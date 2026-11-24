@@ -124,7 +124,7 @@ async function applyChanges(): Promise<SchedulerEvent> {
       if (reply?.ok === true) {
         const checked = await checkChanges(null);
         const fingerprint =
-          checked.type === "changes-checked" && checked.reachable && checked.detection.kind !== "invalid"
+          checked.type === "changes-checked" && checked.reachable && (checked.detection.kind === "unchanged" || checked.detection.kind === "remote")
             ? checked.detection.fingerprint
             : undefined;
         return { type: "changes-applied", applied: true, ...(fingerprint && { fingerprint }) };
@@ -325,7 +325,7 @@ async function main(): Promise<void> {
     dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
   );
   onSettingsChanged((keys) => {
-    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection")) return;
+    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection") && !keys.includes("safetyNetMinutes")) return;
     void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });
 }
