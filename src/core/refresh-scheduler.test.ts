@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   initialSchedulerState,
+  normalizeTabMode,
   transition,
   type PersistedSchedulerState,
   type SchedulerCommand,
@@ -746,5 +747,16 @@ describe("Refresh Scheduler: blockers together with failures", () => {
       { type: "schedule-timer", delayMs: INTERVAL },
       { type: "set-badge", badge: "blocked", reason: "blocked", blockers: ["unsaved-input"] },
     ]);
+  });
+});
+
+describe("normalizeTabMode", () => {
+  it.each([
+    ["all-tabs", "all-tabs"],
+    ["current-tab", "current-tab"],
+    [undefined, "current-tab"],
+    ["something-else", "current-tab"],
+  ])("reads %j as %j", (value, mode) => {
+    expect(normalizeTabMode(value)).toBe(mode);
   });
 });

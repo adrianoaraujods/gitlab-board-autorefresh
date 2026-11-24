@@ -34,6 +34,11 @@ import type { BlockerReason } from "./blocker-detector";
  */
 export type TabMode = "current-tab" | "all-tabs";
 
+/** Reads a stored or submitted tab mode; anything but "all-tabs" is the default, "current-tab". */
+export function normalizeTabMode(value: unknown): TabMode {
+  return value === "all-tabs" ? "all-tabs" : "current-tab";
+}
+
 export interface SchedulerSettings {
   intervalMs: number;
   mode: TabMode;

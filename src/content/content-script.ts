@@ -37,7 +37,7 @@ import {
 } from "../core/refresh-scheduler";
 import { restoreScrollSnapshot, saveScrollSnapshot } from "../core/scroll-snapshot";
 import { sendToBackground, type StatusReply, type ToContentMessage } from "../shared/messages";
-import { loadSettings, onSettingsChanged } from "../shared/settings";
+import { loadSettings, onSettingsChanged, toSchedulerSettings } from "../shared/settings";
 
 /** sessionStorage is per tab and survives reloads, which is exactly the lifetime we need. */
 const PERSIST_KEY = "gitlab-board-autorefresh:scheduler";
@@ -244,7 +244,7 @@ async function main(): Promise<void> {
   });
   const [active, paused, windowFocused] = await Promise.all([isActiveTab(), fetchPaused(), isWindowFocused()]);
 
-  state = initialSchedulerState({ intervalMs: settings.intervalSeconds * 1000, mode: settings.mode });
+  state = initialSchedulerState(toSchedulerSettings(settings));
   dispatch({
     type: "page-loaded",
     page,
@@ -262,9 +262,7 @@ async function main(): Promise<void> {
   );
   onSettingsChanged((keys) => {
     if (!keys.includes("intervalSeconds") && !keys.includes("mode")) return;
-    void loadSettings().then(({ intervalSeconds, mode }) =>
-      dispatch({ type: "settings-changed", settings: { intervalMs: intervalSeconds * 1000, mode } }),
-    );
+    void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });
 }
 
