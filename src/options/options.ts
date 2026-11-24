@@ -4,6 +4,7 @@
  */
 import { originMatchPattern, parseDomainOrigin } from "../core/domain-origin";
 import { parseIntervalSeconds } from "../core/refresh-interval";
+import { normalizeTabMode } from "../core/refresh-scheduler";
 import { loadSettings, onSettingsChanged, saveSettings } from "../shared/settings";
 
 const list = document.querySelector<HTMLUListElement>("#domain-list")!;
@@ -66,9 +67,13 @@ async function addDomain(value: string): Promise<void> {
 }
 
 function showError(error: unknown): void {
-  const message = error === null ? "" : error instanceof Error ? error.message : String(error);
+  const message = error === null ? "" : errorMessage(error);
   errorText.textContent = message;
   errorText.hidden = message === "";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const intervalForm = document.querySelector<HTMLFormElement>("#interval-form")!;
@@ -91,7 +96,7 @@ intervalForm.addEventListener("submit", (event) => {
   saveSettings({ intervalSeconds: result.seconds }).then(
     () => (intervalSaved.hidden = false),
     (error: unknown) => {
-      intervalError.textContent = error instanceof Error ? error.message : String(error);
+      intervalError.textContent = errorMessage(error);
       intervalError.hidden = false;
     },
   );
@@ -109,10 +114,10 @@ async function renderMode(): Promise<void> {
 
 modeFieldset.addEventListener("change", (event) => {
   const radio = event.target as HTMLInputElement;
-  const mode = radio.value === "all-tabs" ? "all-tabs" : "current-tab";
+  const mode = normalizeTabMode(radio.value);
   modeError.hidden = true;
   saveSettings({ mode }).catch((error: unknown) => {
-    modeError.textContent = error instanceof Error ? error.message : String(error);
+    modeError.textContent = errorMessage(error);
     modeError.hidden = false;
     void renderMode();
   });

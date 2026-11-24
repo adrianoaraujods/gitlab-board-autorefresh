@@ -1,5 +1,7 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-import { matchBoardPage } from "./board-page-matcher";
+import { isBoardDocument, matchBoardPage } from "./board-page-matcher";
 
 const configured = ["https://gitlab.com", "https://example.com"];
 
@@ -28,5 +30,29 @@ describe("Board Page Matcher", () => {
     ["invalid url", "not a url", "none"],
   ])("%s: %s → %s", (_name, url, expected) => {
     expect(matchBoardPage(url, configured)).toBe(expected);
+  });
+});
+
+describe("isBoardDocument", () => {
+  const BOARD_URL = "https://gitlab.example/group/project/-/boards/1";
+  const parse = (html: string) => new JSDOM(html, { url: BOARD_URL }).window.document;
+  const FIXTURES = new URL("./fixtures/gitlab-19.5/", import.meta.url);
+
+  it.each(readdirSync(FIXTURES).filter((name) => name.endsWith(".html")))("recognises the 19.5 snapshot %s", (name) => {
+    expect(isBoardDocument(parse(readFileSync(new URL(name, FIXTURES), "utf8")))).toBe(true);
+  });
+
+  it("recognises a group board by its page id", () => {
+    expect(isBoardDocument(parse('<body data-page="groups:boards:index"></body>'))).toBe(true);
+  });
+
+  it("rejects an error page served at a board URL", () => {
+    expect(isBoardDocument(parse("<body><h1>502</h1><p>Whoops, GitLab is taking too much time to respond.</p></body>"))).toBe(
+      false,
+    );
+  });
+
+  it("rejects another GitLab page", () => {
+    expect(isBoardDocument(parse('<body data-page="projects:issues:index"></body>'))).toBe(false);
   });
 });

@@ -1,10 +1,12 @@
-import { originMatchPattern } from "../core/domain-origin";
+import { originMatchPattern, unneededOriginPatterns } from "../core/domain-origin";
 import { loadSettings } from "../shared/settings";
 
 /**
  * Keeps one dynamically registered content script per configured origin that
  * the user has granted host access to. Registrations persist across browser
- * restarts; this reconciles them whenever domains or permissions change.
+ * restarts; this reconciles them whenever domains or permissions change. It
+ * also gives back host access to origins no configured domain needs any more
+ * (for example, a domain removed on another synced profile).
  */
 const SCRIPT_ID_PREFIX = "board:";
 const CONTENT_SCRIPT_FILE = "content-script.js";
@@ -21,6 +23,10 @@ export function syncContentScripts(): Promise<void> {
 
 async function reconcile(): Promise<void> {
   const { domains } = await loadSettings();
+  const { origins: grantedPatterns = [] } = await chrome.permissions.getAll();
+  const unneeded = unneededOriginPatterns(grantedPatterns, domains);
+  if (unneeded.length > 0) await chrome.permissions.remove({ origins: unneeded });
+
   const granted: string[] = [];
   for (const origin of domains) {
     if (await chrome.permissions.contains({ origins: [originMatchPattern(origin)] })) granted.push(origin);

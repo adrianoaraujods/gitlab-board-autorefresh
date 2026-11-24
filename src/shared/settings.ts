@@ -1,6 +1,6 @@
 /** Settings stored in chrome.storage.sync, with defaults in DEFAULT_SETTINGS. */
 import { DEFAULT_INTERVAL_SECONDS, normalizeIntervalSeconds } from "../core/refresh-interval";
-import type { TabMode } from "../core/refresh-scheduler";
+import { normalizeTabMode, type SchedulerSettings, type TabMode } from "../core/refresh-scheduler";
 
 export interface Settings {
   /** Configured origins, e.g. "https://gitlab.com". */
@@ -23,8 +23,13 @@ export async function loadSettings(): Promise<Settings> {
   return {
     ...settings,
     intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds),
-    mode: settings.mode === "all-tabs" ? "all-tabs" : "current-tab",
+    mode: normalizeTabMode(settings.mode),
   };
+}
+
+/** The Refresh Scheduler's view of the settings. */
+export function toSchedulerSettings({ intervalSeconds, mode }: Pick<Settings, "intervalSeconds" | "mode">): SchedulerSettings {
+  return { intervalMs: intervalSeconds * 1000, mode };
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {

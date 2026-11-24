@@ -11,10 +11,16 @@ export type ContentToBackgroundMessage =
   /** Asks whether the sender's tab is the active tab of its window; answered with `TabActivityResponse`. */
   | { type: "get-tab-activity" }
   /** Asks whether the sender's tab is paused; answered with `PauseReply`. */
-  | { type: "get-pause" };
+  | { type: "get-pause" }
+  /** Asks whether the sender tab's browser window is the focused Chrome window; answered with `WindowFocusReply`. */
+  | { type: "get-window-focus" };
 
 export interface TabActivityResponse {
   active: boolean;
+}
+
+export interface WindowFocusReply {
+  focused: boolean;
 }
 
 /** Messages sent from the background service worker to a content script. */
@@ -24,7 +30,12 @@ export type BackgroundToContentMessage =
       /** Whether the receiving tab is now the active tab of its window. */
       active: boolean;
     }
-  | { type: "pause-toggled"; paused: boolean };
+  | { type: "pause-toggled"; paused: boolean }
+  | {
+      type: "window-focus-changed";
+      /** Whether the receiving tab's browser window is now the focused Chrome window. */
+      focused: boolean;
+    };
 
 /** Messages sent from the popup to the background service worker. */
 export type PopupToBackgroundMessage =
@@ -50,11 +61,39 @@ export interface StatusReply {
   status: SchedulerStatus | null;
 }
 
-export function sendToBackground(message: BackgroundMessage): Promise<unknown> {
+/** The reply each message to the background worker is answered with (`void`: not answered). */
+interface BackgroundReplies {
+  "set-badge": void;
+  "get-tab-activity": TabActivityResponse;
+  "get-pause": PauseReply;
+  "get-window-focus": WindowFocusReply;
+  "get-tab-pause": PauseReply;
+  "set-tab-pause": PauseReply;
+}
+
+/** The reply each message to a content script is answered with (`void`: not answered). */
+interface ContentReplies {
+  "tab-activity-changed": void;
+  "pause-toggled": void;
+  "window-focus-changed": void;
+  "get-status": StatusReply;
+}
+
+export type BackgroundReply<M extends BackgroundMessage> = BackgroundReplies[M["type"]];
+export type ContentReply<M extends ToContentMessage> = ContentReplies[M["type"]];
+
+/**
+ * Sends to the background worker and resolves with the reply for that message
+ * type, or `undefined` if nothing answered.
+ */
+export function sendToBackground<M extends BackgroundMessage>(message: M): Promise<BackgroundReply<M> | undefined> {
   return chrome.runtime.sendMessage(message);
 }
 
-/** Sends to a tab's content script; rejects if there is none (not a board page, or still loading). */
-export function sendToTab(tabId: number, message: ToContentMessage): Promise<unknown> {
+/**
+ * Sends to a tab's content script and resolves with the reply for that message
+ * type; rejects if there is no content script (not a board page, or still loading).
+ */
+export function sendToTab<M extends ToContentMessage>(tabId: number, message: M): Promise<ContentReply<M> | undefined> {
   return chrome.tabs.sendMessage(tabId, message);
 }
