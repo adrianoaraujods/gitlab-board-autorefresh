@@ -133,7 +133,19 @@ describe("Refresh Scheduler", () => {
       s.send({ type: "timer-fired" }, T0 + INTERVAL);
       expect(s.send({ type: "blockers-checked", reasons: ["unsaved-input"] }, T0 + INTERVAL)).toEqual([
         { type: "schedule-timer", delayMs: INTERVAL },
-        { type: "set-badge", badge: "blocked", reason: "blocked" },
+        { type: "set-badge", badge: "blocked", reason: "blocked", blockers: ["unsaved-input"] },
+      ]);
+    });
+
+    it("reports what blocks the reload, and updates the badge status when that changes", () => {
+      const s = scheduler();
+      s.send({ type: "page-loaded", focused: false, restored: null }, T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send({ type: "blockers-checked", reasons: ["sidebar-open"] }, T0 + INTERVAL);
+      s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL);
+      expect(s.send({ type: "blockers-checked", reasons: ["overlay-open", "dragging"] }, T0 + 2 * INTERVAL)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+        { type: "set-badge", badge: "blocked", reason: "blocked", blockers: ["overlay-open", "dragging"] },
       ]);
     });
 
@@ -633,7 +645,7 @@ describe("Refresh Scheduler: blockers together with failures", () => {
     expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-blockers" }]);
     expect(s.send({ type: "blockers-checked", reasons: ["unsaved-input"] }, T0 + 2 * INTERVAL)).toEqual([
       { type: "schedule-timer", delayMs: INTERVAL },
-      { type: "set-badge", badge: "blocked", reason: "blocked" },
+      { type: "set-badge", badge: "blocked", reason: "blocked", blockers: ["unsaved-input"] },
     ]);
   });
 });

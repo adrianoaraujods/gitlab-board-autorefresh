@@ -67,6 +67,8 @@ export type StatusReason =
 export interface SchedulerStatus {
   badge: BadgeState;
   reason: StatusReason;
+  /** What blocks the reload, in Blocker Detector order; only with reason `blocked`. */
+  blockers?: readonly BlockerReason[];
 }
 
 export interface SchedulerState {
@@ -91,8 +93,8 @@ export interface SchedulerState {
    * with no reasons (the reload may go ahead in this transition only).
    */
   blockerCheck: "idle" | "pending" | "clear";
-  /** Epoch ms of the last tick skipped because something blocked the reload, or `null`. */
-  blockedAt: number | null;
+  /** The last tick skipped because something blocked the reload (when, and what blocked it), or `null`. */
+  blocked: { at: number; reasons: readonly BlockerReason[] } | null;
   /** What has already been commanded, so `realise` can emit only changes. */
   commanded: {
     /** Epoch ms the pending timer is due at, or `null` if none is pending. */
@@ -167,7 +169,7 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     active: true,
     persisted: { lastReloadAt: null },
     blockerCheck: "idle",
-    blockedAt: null,
+    blocked: null,
     commanded: { timerDueAt: null, status: null },
   };
 }
@@ -219,7 +221,7 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       if (state.blockerCheck !== "pending") return state;
       return event.reasons.length === 0
         ? { ...state, blockerCheck: "clear" }
-        : { ...state, blockerCheck: "idle", blockedAt: now };
+        : { ...state, blockerCheck: "idle", blocked: { at: now, reasons: [...event.reasons] } };
     case "pause-toggled":
       return { ...state, persisted: { ...state.persisted, paused: event.paused } };
   }
@@ -251,7 +253,6 @@ const haltWhenSignedOut: HaltRule = (state) => (state.signedOut ? { badge: "erro
 export const HALT_RULES: readonly HaltRule[] = [haltWhilePaused, haltWhenSignedOut, haltWhileFocused, haltUnlessCurrentTab];
 
 const POLLING: SchedulerStatus = { badge: "polling", reason: "polling" };
-const BLOCKED: SchedulerStatus = { badge: "blocked", reason: "blocked" };
 const FAILING: SchedulerStatus = { badge: "error", reason: "reload-failed" };
 
 export function plan(state: SchedulerState, now: number): Plan {
@@ -267,7 +268,7 @@ export function plan(state: SchedulerState, now: number): Plan {
 
 /** A skipped (blocked) tick shows yellow until the next check, even while failures back off; otherwise failing reloads show red. */
 function waitingStatus(state: SchedulerState): SchedulerStatus {
-  if (state.blockedAt !== null) return BLOCKED;
+  if (state.blocked !== null) return { badge: "blocked", reason: "blocked", blockers: state.blocked.reasons };
   return failures(state) > 0 ? FAILING : POLLING;
 }
 
@@ -289,7 +290,7 @@ export function nextDueAt(state: SchedulerState): number {
   const { intervalMs } = state.settings;
   const backoff = Math.min(intervalMs * 2 ** failures(state), Math.max(MAX_BACKOFF_MS, intervalMs));
   const afterReload = lastReloadAt === null ? -Infinity : lastReloadAt + backoff;
-  const afterBlocked = state.blockedAt === null ? -Infinity : state.blockedAt + intervalMs;
+  const afterBlocked = state.blocked === null ? -Infinity : state.blocked.at + intervalMs;
   return Math.max(afterReload, afterBlocked);
 }
 
@@ -303,7 +304,7 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
       return onDue(state, now);
     case "halted":
       // Whatever blocked the last tick gets a fresh check as soon as refreshing resumes.
-      return sync({ ...state, blockedAt: null }, null, planned.status, now);
+      return sync({ ...state, blocked: null }, null, planned.status, now);
     case "waiting":
       return sync(state, planned.dueAt, planned.status, now);
   }
@@ -329,7 +330,7 @@ export function onDue(state: SchedulerState, now: number): Transition {
       persisted,
       // A reload that fails (#8) comes back to "running" and needs a fresh blocker check next time.
       blockerCheck: "idle",
-      blockedAt: null,
+      blocked: null,
       commanded: { ...state.commanded, timerDueAt: null },
     },
     commands,
@@ -343,9 +344,15 @@ function sync(state: SchedulerState, timerDueAt: number | null, status: Schedule
   if (timerDueAt !== commanded.timerDueAt) {
     commands.push(timerDueAt === null ? { type: "cancel-timer" } : { type: "schedule-timer", delayMs: timerDueAt - now });
   }
-  if (commanded.status?.badge !== status.badge || commanded.status.reason !== status.reason) {
+  if (!sameStatus(commanded.status, status)) {
     commands.push({ type: "set-badge", ...status });
   }
   // Not due any more: an outstanding or passed blocker check no longer applies.
   return { state: { ...state, blockerCheck: "idle", commanded: { timerDueAt, status } }, commands };
+}
+
+function sameStatus(a: SchedulerStatus | null, b: SchedulerStatus): boolean {
+  if (a === null || a.badge !== b.badge || a.reason !== b.reason) return false;
+  const [x = [], y = []] = [a.blockers, b.blockers];
+  return x.length === y.length && x.every((reason, i) => reason === y[i]);
 }
