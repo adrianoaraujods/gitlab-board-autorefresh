@@ -33,13 +33,7 @@ import {
   type SchedulerStatus,
 } from "../core/refresh-scheduler";
 import { restoreScrollSnapshot, saveScrollSnapshot } from "../core/scroll-snapshot";
-import {
-  sendToBackground,
-  type PauseReply,
-  type StatusReply,
-  type TabActivityResponse,
-  type ToContentMessage,
-} from "../shared/messages";
+import { sendToBackground, type StatusReply, type ToContentMessage } from "../shared/messages";
 import { loadSettings, onSettingsChanged } from "../shared/settings";
 
 /** sessionStorage is per tab and survives reloads, which is exactly the lifetime we need. */
@@ -171,7 +165,7 @@ function writePersisted(persisted: PersistedSchedulerState): void {
 
 async function fetchPaused(): Promise<boolean> {
   try {
-    const reply = (await sendToBackground({ type: "get-pause" })) as PauseReply | undefined;
+    const reply = await sendToBackground({ type: "get-pause" });
     return reply?.paused === true;
   } catch {
     return false;
@@ -180,7 +174,7 @@ async function fetchPaused(): Promise<boolean> {
 
 async function isActiveTab(): Promise<boolean> {
   try {
-    const response = (await sendToBackground({ type: "get-tab-activity" })) as TabActivityResponse | undefined;
+    const response = await sendToBackground({ type: "get-tab-activity" });
     return response?.active ?? true;
   } catch {
     return true;
