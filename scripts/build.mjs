@@ -12,13 +12,14 @@ const entryPoints = {
   popup: "src/popup/popup.ts",
 };
 
-/** Static files copied as-is: source → destination in dist/. */
+/** Static files and folders copied as-is: source → destination in dist/. */
 const staticFiles = {
   "src/manifest.json": "manifest.json",
   "src/options/options.html": "options.html",
   "src/options/options.css": "options.css",
   "src/popup/popup.html": "popup.html",
   "src/popup/popup.css": "popup.css",
+  "src/icons": "icons",
 };
 
 await rm(outdir, { recursive: true, force: true });
@@ -35,5 +36,5 @@ await build({
 });
 
 for (const [from, to] of Object.entries(staticFiles)) {
-  await cp(from, `${outdir}/${to}`);
+  await cp(from, `${outdir}/${to}`, { recursive: true });
 }
