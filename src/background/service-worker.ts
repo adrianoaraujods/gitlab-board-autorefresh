@@ -7,11 +7,13 @@ import {
   sendToTab,
   type BackgroundMessage,
   type PauseReply,
+  type RefetchReply,
   type TabActivityResponse,
   type WindowFocusReply,
 } from "../shared/messages";
 import { onSettingsChanged } from "../shared/settings";
 import { setTabBadge } from "./badge";
+import { refetchBoardInPlace } from "./board-refetch";
 import { syncContentScripts } from "./content-script-registry";
 import { notifyTabActivity } from "./tab-activity";
 import { forgetTab, isTabPaused, setTabPaused } from "./tab-pause";
@@ -51,6 +53,9 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendRe
       return;
     case "get-pause":
       reply(isTabPaused(tab.id), sendResponse);
+      return true;
+    case "refetch-board":
+      void refetchBoardInPlace(tab.id).then((ok) => sendResponse({ ok } satisfies RefetchReply));
       return true;
     case "get-window-focus":
       void isWindowFocused(tab.windowId).then(

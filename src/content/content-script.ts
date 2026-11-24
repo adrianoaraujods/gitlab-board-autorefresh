@@ -77,6 +77,9 @@ function run(command: SchedulerCommand): void {
     case "check-changes":
       void checkChanges(command.baseline).then(dispatch);
       return;
+    case "apply-changes":
+      void applyChanges().then(dispatch);
+      return;
     case "reload":
       saveScroll();
       location.reload();
@@ -106,6 +109,31 @@ function run(command: SchedulerCommand): void {
       writePersisted(command.state);
       return;
   }
+}
+
+/**
+ * Applies a detected change. With "Update in place" on, refetches the board's
+ * data through the page's own Apollo client and takes a fresh fingerprint as
+ * the new baseline; with it off, or when that isn't possible, answers
+ * not-applied and the scheduler reloads.
+ */
+async function applyChanges(): Promise<SchedulerEvent> {
+  try {
+    if ((await loadSettings()).updateInPlace) {
+      const reply = await sendToBackground({ type: "refetch-board" });
+      if (reply?.ok === true) {
+        const checked = await checkChanges(null);
+        const fingerprint =
+          checked.type === "changes-checked" && checked.reachable && (checked.detection.kind === "unchanged" || checked.detection.kind === "remote")
+            ? checked.detection.fingerprint
+            : undefined;
+        return { type: "changes-applied", applied: true, ...(fingerprint && { fingerprint }) };
+      }
+    }
+  } catch {
+    // Fall through: reload.
+  }
+  return { type: "changes-applied", applied: false };
 }
 
 /** How long the pre-reload reachability check may take before it counts as failed. */

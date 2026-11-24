@@ -19,6 +19,8 @@ export interface Settings {
   mode: TabMode;
   /** Whether a due tick reloads only when the board changed ("smart", the default) or always (v1). */
   detection: Detection;
+  /** Experimental: apply detected changes through the board's data layer instead of reloading (default off). */
+  updateInPlace: boolean;
   /** Minutes between safety-net full reloads in smart mode (default 15, 0 = off). */
   safetyNetMinutes: number;
 }
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   intervalSeconds: DEFAULT_INTERVAL_SECONDS,
   mode: "current-tab",
   detection: "smart",
+  updateInPlace: false,
   safetyNetMinutes: DEFAULT_SAFETY_NET_MINUTES,
 });
 
@@ -39,6 +42,7 @@ export async function loadSettings(): Promise<Settings> {
     intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds),
     mode: normalizeTabMode(settings.mode),
     detection: normalizeDetection(settings.detection),
+    updateInPlace: settings.updateInPlace === true,
     safetyNetMinutes: normalizeSafetyNetMinutes(settings.safetyNetMinutes),
   };
 }

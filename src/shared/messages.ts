@@ -15,7 +15,14 @@ export type ContentToBackgroundMessage =
   /** Asks whether the sender's tab is paused; answered with `PauseReply`. */
   | { type: "get-pause" }
   /** Asks whether the sender tab's browser window is the focused Chrome window; answered with `WindowFocusReply`. */
-  | { type: "get-window-focus" };
+  | { type: "get-window-focus" }
+  /** Asks the worker to refetch the sender tab's board data in place; answered with `RefetchReply`. */
+  | { type: "refetch-board" };
+
+export interface RefetchReply {
+  /** Whether the board's data layer was found and refetched. */
+  ok: boolean;
+}
 
 export interface TabActivityResponse {
   active: boolean;
@@ -69,6 +76,7 @@ interface BackgroundReplies {
   "get-tab-activity": TabActivityResponse;
   "get-pause": PauseReply;
   "get-window-focus": WindowFocusReply;
+  "refetch-board": RefetchReply;
   "get-tab-pause": PauseReply;
   "set-tab-pause": PauseReply;
 }

@@ -73,6 +73,15 @@
           </label>
         </fieldset>
         <p id="detection-error" class="error" role="alert" hidden></p>
+        <label class="choice">
+          <input type="checkbox" id="update-in-place-input" />
+          <span>
+            <strong>Update in place (experimental)</strong>: apply detected changes through the board's own data
+            layer, with no reload and no flash. Falls back to a normal reload if that isn't available. Needs Smart
+            detection.
+          </span>
+        </label>
+        <p id="update-in-place-error" class="error" role="alert" hidden></p>
       </section>
 
       <section aria-labelledby="safety-net-heading">
