@@ -100,7 +100,8 @@ The content script adapter, background worker, options page and popup are checke
 instance.
 
 When GitLab changes its board markup, save a snapshot of the new markup as a fixture (remove any instance domains,
-names and data first), add a failing test, and update the selectors in `src/core/blocker-detector.ts`.
+names and data first), add a failing test, and update the selectors in `src/core/blocker-detector.ts` (or the board markers in
+`src/core/board-page-matcher.ts`).
 
 ### Releasing to the Chrome Web Store
 
@@ -115,19 +116,21 @@ names and data first), add a failing test, and update the selectors in `src/core
 | `src/core/` | Pure, browser-free modules with unit tests |
 | `src/core/refresh-scheduler.ts` | Refresh Scheduler: pure `(state, event, now) → { state, commands }` transition |
 | `src/core/blocker-detector.ts` | Blocker Detector: `(document) → active blocker reasons` |
-| `src/core/board-page-matcher.ts` | Board Page Matcher |
+| `src/core/board-page-matcher.ts` | Board Page Matcher: board URLs, and board markup in a loaded document |
 | `src/core/scroll-snapshot.ts` | Scroll Snapshot |
 | `src/core/domain-origin.ts` | Domain validation (origin only) and match patterns |
 | `src/core/refresh-interval.ts` | Refresh interval validation (default 30s, minimum 10s) |
 | `src/core/badge.ts` | Badge states |
 | `src/shared/` | Browser helpers used by several entry points: settings and messages |
-| `src/background/` | Background Service Worker: badge per tab, tab activity, pause state, content-script registration |
+| `src/background/` | Background Service Worker: badge per tab, tab activity, window focus, pause state, content-script registration and host-access clean-up |
 | `src/content/content-script.ts` | Content Script Adapter |
 | `src/options/`, `src/popup/` | Options Page and Popup |
 | `src/icons/` | Rendered PNG icons (generated from `assets/`) |
 | `src/manifest.json` | Manifest; no host permissions, every origin is optional and granted at runtime |
 | `scripts/build.mjs` | esbuild bundling and static-file copying into `dist/` |
 | `scripts/package.mjs` | Store zip from a clean build |
+| `scripts/render-icons.mjs` | Renders the PNG icons from `assets/*.svg` (`npm run icons`) |
+| `scripts/lib/` | Packaging file list and its tests, plus the store-listing permission check |
 | `store/` | Web Store listing text, privacy answers and store icon |
 
 ## Contributing
