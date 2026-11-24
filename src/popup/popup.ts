@@ -25,6 +25,7 @@ const REASON_TEXT: Record<StatusReason, string> = {
   "signed-out": "Signed out of GitLab, so auto-refresh stopped. Sign in again to resume.",
   "updates-available": "Updates available — will refresh when you switch away",
   "reload-failed": "Reloads are failing (server unreachable or an error page); retrying with backoff up to 5 minutes.",
+  "detection-unavailable": "Change detection unavailable — reloading on every interval.",
 };
 
 const BLOCKER_TEXT: Record<BlockerReason, string> = {
