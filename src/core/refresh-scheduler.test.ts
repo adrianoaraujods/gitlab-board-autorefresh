@@ -867,15 +867,55 @@ describe("Refresh Scheduler: smart detection", () => {
       expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-changes", baseline: BOARD_LATER }]);
     });
 
-    it("reloads after a change, through the blocker and reachability checks", () => {
+    it("applies a change with apply-changes, through the blocker and reachability checks", () => {
       const s = smartBoardLoadedAt(T0);
       s.send({ type: "timer-fired" }, T0 + INTERVAL);
       expect(s.send(CHANGED, T0 + INTERVAL)).toEqual([{ type: "check-blockers" }]);
       expect(s.send(NOTHING_BLOCKING, T0 + INTERVAL)).toEqual(CHECK_REACHABILITY);
-      expect(s.send(REACHABLE, T0 + INTERVAL)).toEqual([
-        { type: "persist", state: { lastReloadAt: T0 + INTERVAL, baseline: BOARD_AT_LOAD } },
+      expect(s.send(REACHABLE, T0 + INTERVAL)).toEqual([{ type: "apply-changes" }]);
+    });
+
+    it("takes the fetched fingerprint as the baseline after a successful in-place apply, without reloading", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      s.send(REACHABLE, T0 + INTERVAL);
+      expect(s.send({ type: "changes-applied", applied: true }, T0 + INTERVAL + SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL + SECOND)).toEqual([
+        { type: "check-changes", baseline: BOARD_LATER },
+      ]);
+    });
+
+    it("prefers the fingerprint the adapter fetched after applying", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      s.send(REACHABLE, T0 + INTERVAL);
+      s.send({ type: "changes-applied", applied: true, fingerprint: BOARD_AT_LOAD }, T0 + INTERVAL);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([
+        { type: "check-changes", baseline: BOARD_AT_LOAD },
+      ]);
+    });
+
+    it("reloads when the in-place apply failed", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      s.send(CHANGED, T0 + INTERVAL);
+      s.send(NOTHING_BLOCKING, T0 + INTERVAL);
+      s.send(REACHABLE, T0 + INTERVAL);
+      expect(s.send({ type: "changes-applied", applied: false }, T0 + INTERVAL + SECOND)).toEqual([
+        { type: "persist", state: { lastReloadAt: T0 + INTERVAL + SECOND, baseline: BOARD_AT_LOAD } },
         { type: "reload" },
       ]);
+    });
+
+    it("ignores an apply answer nobody is waiting for", () => {
+      const s = smartBoardLoadedAt(T0);
+      expect(s.send({ type: "changes-applied", applied: false }, T0 + SECOND)).toEqual([]);
     });
 
     it("checks again against the same baseline after a change was blocked", () => {

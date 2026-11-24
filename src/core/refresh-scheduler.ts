@@ -34,6 +34,11 @@
  * `SchedulerCommand`. New detection results (#13–#15) are handled in
  * `changesChecked`; a different way to apply a change (#17) replaces the
  * `reload` step of `dueStep`.
+ *
+ * Update in place (#17): in smart detection a change found by the check is
+ * applied with `apply-changes` instead of `reload`. The adapter answers
+ * `changes-applied`: applied (the new fingerprint becomes the baseline, no
+ * reload) or not (the scheduler reloads). Safety-net and v1 reloads stay `reload`.
  */
 import type { BadgeState } from "./badge";
 import type { BlockerReason } from "./blocker-detector";
@@ -141,6 +146,10 @@ export interface SchedulerState {
    * baseline (not for a due tick), and its answer is outstanding.
    */
   baselinePending: boolean;
+  /** Smart detection: the fingerprint of a change the due check found, to be applied with `apply-changes`; else `null`. */
+  pendingApply: BoardFingerprint | null;
+  /** An `apply-changes` was commanded and its `changes-applied` answer is outstanding (holds the fingerprint to adopt). */
+  applying: BoardFingerprint | null;
   /** Smart detection: epoch ms of the last check that found nothing to reload, or `null`. */
   lastCheckAt: number | null;
   /** The last tick skipped because something blocked the reload (when, and what blocked it), or `null`. */
@@ -211,7 +220,13 @@ export type SchedulerEvent =
    * error, timeout, an HTTP error), or the Change Detector's result.
    */
   | { type: "changes-checked"; reachable: false }
-  | { type: "changes-checked"; reachable: true; detection: ChangeDetection };
+  | { type: "changes-checked"; reachable: true; detection: ChangeDetection }
+  /**
+   * The adapter's answer to `apply-changes`: the board was updated in place
+   * (`fingerprint`: the board as fetched afterwards, if the adapter has it) or
+   * could not be, and the scheduler reloads.
+   */
+  | { type: "changes-applied"; applied: boolean; fingerprint?: BoardFingerprint };
 
 /**
  * `board`: an issue board loaded. `sign-in`: the tab landed on the sign-in
@@ -221,6 +236,8 @@ export type LoadedPage = "board" | "sign-in" | "error";
 
 export type SchedulerCommand =
   | { type: "reload" }
+  /** Smart detection: bring the board up to date without the v1 reload if possible; answer with a `changes-applied` event. */
+  | { type: "apply-changes" }
   /** Start the single scheduler timer, replacing any pending one. */
   | { type: "schedule-timer"; delayMs: number }
   | { type: "cancel-timer" }
@@ -266,6 +283,8 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
     persisted: { lastReloadAt: null },
     reloadCheck: "idle",
     baselinePending: false,
+    pendingApply: null,
+    applying: null,
     lastCheckAt: null,
     blocked: null,
     commanded: { timerDueAt: null, status: null },
@@ -323,6 +342,8 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
         signedOut: page === "sign-in",
         boardLoaded: page === "board",
         baselinePending: false,
+        pendingApply: null,
+        applying: null,
         lastCheckAt: null,
         visible: event.visible ?? true,
         active: event.active ?? true,
@@ -360,6 +381,14 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return { ...state, persisted: { ...state.persisted, paused: event.paused } };
     case "changes-checked":
       return changesChecked(state, event, now);
+    case "changes-applied": {
+      if (state.applying === null) return state;
+      const fingerprint = event.fingerprint ?? state.applying;
+      if (!event.applied) return { ...state, applying: null, reloadCheck: "ready" };
+      // The board shows the change now: it is the new baseline and the next check is an interval away.
+      const persisted = withFailures({ ...state.persisted, baseline: fingerprint }, 0);
+      return { ...state, applying: null, reloadCheck: "idle", lastCheckAt: now, blocked: null, persisted };
+    }
   }
 }
 
@@ -380,15 +409,20 @@ function changesChecked(
     case "unchanged": {
       // The server answered, so earlier failures are over; the next check is an interval from now.
       const persisted = withFailures({ ...state.persisted, baseline: detection.fingerprint }, 0);
-      return { ...state, reloadCheck: "idle", lastCheckAt: now, blocked: null, persisted };
+      return { ...state, reloadCheck: "idle", pendingApply: null, lastCheckAt: now, blocked: null, persisted };
     }
     case "remote":
-      // Keep the old baseline: if the reload is blocked, the next check still sees the change.
-      return { ...state, reloadCheck: "changed", persisted: withFailures(state.persisted, 0) };
+      // Keep the old baseline: if the apply is blocked, the next check still sees the change.
+      return {
+        ...state,
+        reloadCheck: "changed",
+        pendingApply: detection.fingerprint,
+        persisted: withFailures(state.persisted, 0),
+      };
     default:
       // A failed request or a response detection can't read: reload like v1. A failed
       // request then fails the reachability check too, and backs off.
-      return { ...state, reloadCheck: "changed" };
+      return { ...state, reloadCheck: "changed", pendingApply: null };
   }
 }
 
@@ -486,7 +520,7 @@ export function realise(state: SchedulerState, planned: Plan, now: number): Tran
 /** The reload is due: run the next pre-reload check, and reload once they have all passed. */
 export function onDue(state: SchedulerState, now: number): Transition {
   // A baseline check is outstanding: its answer decides nothing, but wait for it so the due check compares with it.
-  if (state.baselinePending) return { state, commands: [] };
+  if (state.baselinePending || state.applying !== null) return { state, commands: [] };
   const step = dueStep(state);
   if (step === null) return { state, commands: [] }; // An answer is outstanding.
   const commands: SchedulerCommand[] = [];
@@ -495,6 +529,10 @@ export function onDue(state: SchedulerState, now: number): Transition {
   if (step !== "reload") {
     commands.push(step.command);
     return { state: { ...state, reloadCheck: step.next, commanded }, commands };
+  }
+  if (state.pendingApply !== null) {
+    commands.push({ type: "apply-changes" });
+    return { state: { ...state, applying: state.pendingApply, pendingApply: null, reloadCheck: "idle", commanded }, commands };
   }
   const persisted = { ...state.persisted, lastReloadAt: now };
   commands.push({ type: "persist", state: persisted }, { type: "reload" });

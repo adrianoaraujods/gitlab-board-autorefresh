@@ -145,7 +145,24 @@ detectionFieldset.addEventListener("change", (event) => {
   });
 });
 
+const updateInPlaceInput = document.querySelector<HTMLInputElement>("#update-in-place-input")!;
+const updateInPlaceError = document.querySelector<HTMLParagraphElement>("#update-in-place-error")!;
+
+async function renderUpdateInPlace(): Promise<void> {
+  updateInPlaceInput.checked = (await loadSettings()).updateInPlace;
+}
+
+updateInPlaceInput.addEventListener("change", () => {
+  updateInPlaceError.hidden = true;
+  saveSettings({ updateInPlace: updateInPlaceInput.checked }).catch((error: unknown) => {
+    updateInPlaceError.textContent = errorMessage(error);
+    updateInPlaceError.hidden = false;
+    void renderUpdateInPlace();
+  });
+});
+
 onSettingsChanged((keys) => {
+  if (keys.includes("updateInPlace")) void renderUpdateInPlace();
   if (keys.includes("domains")) void render();
   if (keys.includes("intervalSeconds")) void renderInterval();
   if (keys.includes("mode")) void renderMode();
@@ -158,3 +175,4 @@ void render();
 void renderInterval();
 void renderMode();
 void renderDetection();
+void renderUpdateInPlace();
