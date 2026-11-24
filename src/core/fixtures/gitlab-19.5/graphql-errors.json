@@ -1,0 +1,10 @@
+{
+  "errors": [
+    {
+      "message": "Field 'issuesCount' doesn't exist on type 'BoardList'",
+      "locations": [{ "line": 9, "column": 9 }],
+      "path": ["query BoardAutoRefreshFingerprint", "project", "board", "lists", "nodes", "issuesCount"],
+      "extensions": { "code": "undefinedField", "typeName": "BoardList", "fieldName": "issuesCount" }
+    }
+  ]
+}

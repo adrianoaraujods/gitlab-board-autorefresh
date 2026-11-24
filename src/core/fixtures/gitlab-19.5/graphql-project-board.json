@@ -1,0 +1,68 @@
+{
+  "data": {
+    "project": {
+      "board": {
+        "id": "gid://gitlab/Board/1",
+        "lists": {
+          "nodes": [
+            {
+              "id": "gid://gitlab/List/1",
+              "title": "Open",
+              "listType": "backlog",
+              "position": null,
+              "collapsed": false,
+              "label": null,
+              "issuesCount": 2,
+              "issues": {
+                "nodes": [
+                  { "id": "gid://gitlab/Issue/11", "updatedAt": "2026-11-20T09:15:02Z", "updatedBy": { "id": "gid://gitlab/User/2" } },
+                  { "id": "gid://gitlab/Issue/12", "updatedAt": "2026-11-19T16:40:11Z", "updatedBy": null }
+                ]
+              }
+            },
+            {
+              "id": "gid://gitlab/List/2",
+              "title": "Doing",
+              "listType": "label",
+              "position": 0,
+              "collapsed": false,
+              "label": { "id": "gid://gitlab/ProjectLabel/21", "title": "Doing", "color": "#1f75cb" },
+              "issuesCount": 3,
+              "issues": {
+                "nodes": [
+                  { "id": "gid://gitlab/Issue/13", "updatedAt": "2026-11-21T10:00:00Z", "updatedBy": { "id": "gid://gitlab/User/3" } },
+                  { "id": "gid://gitlab/Issue/14", "updatedAt": "2026-11-21T11:30:45Z", "updatedBy": { "id": "gid://gitlab/User/2" } },
+                  { "id": "gid://gitlab/Issue/15", "updatedAt": "2026-11-18T08:05:59Z", "updatedBy": { "id": "gid://gitlab/User/3" } }
+                ]
+              }
+            },
+            {
+              "id": "gid://gitlab/List/3",
+              "title": "Review",
+              "listType": "label",
+              "position": 1,
+              "collapsed": true,
+              "label": { "id": "gid://gitlab/ProjectLabel/22", "title": "Review", "color": "#8fbc8f" },
+              "issuesCount": 0,
+              "issues": { "nodes": [] }
+            },
+            {
+              "id": "gid://gitlab/List/4",
+              "title": "Closed",
+              "listType": "closed",
+              "position": null,
+              "collapsed": false,
+              "label": null,
+              "issuesCount": 1,
+              "issues": {
+                "nodes": [
+                  { "id": "gid://gitlab/Issue/16", "updatedAt": "2026-11-17T14:22:10Z", "updatedBy": { "id": "gid://gitlab/User/2" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
