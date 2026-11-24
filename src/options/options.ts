@@ -1,8 +1,9 @@
 /**
- * Options Page. Domain list (add, remove, validate, grant). Later tickets add
- * the refresh interval (#3) and the tab mode selector (#6).
+ * Options Page. Domain list (add, remove, validate, grant) and refresh
+ * interval. Later tickets add the tab mode selector (#6).
  */
 import { originMatchPattern, parseDomainOrigin } from "../core/domain-origin";
+import { parseIntervalSeconds } from "../core/refresh-interval";
 import { loadSettings, onSettingsChanged, saveSettings } from "../shared/settings";
 
 const list = document.querySelector<HTMLUListElement>("#domain-list")!;
@@ -70,7 +71,38 @@ function showError(error: unknown): void {
   errorText.hidden = message === "";
 }
 
-onSettingsChanged(() => void render());
+const intervalForm = document.querySelector<HTMLFormElement>("#interval-form")!;
+const intervalInput = document.querySelector<HTMLInputElement>("#interval-input")!;
+const intervalError = document.querySelector<HTMLParagraphElement>("#interval-error")!;
+const intervalSaved = document.querySelector<HTMLParagraphElement>("#interval-saved")!;
+
+async function renderInterval(): Promise<void> {
+  const { intervalSeconds } = await loadSettings();
+  if (document.activeElement !== intervalInput) intervalInput.value = String(intervalSeconds);
+}
+
+intervalForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  intervalSaved.hidden = true;
+  const result = parseIntervalSeconds(intervalInput.value);
+  intervalError.textContent = result.ok ? "" : result.error;
+  intervalError.hidden = result.ok;
+  if (!result.ok) return;
+  saveSettings({ intervalSeconds: result.seconds }).then(
+    () => (intervalSaved.hidden = false),
+    (error: unknown) => {
+      intervalError.textContent = error instanceof Error ? error.message : String(error);
+      intervalError.hidden = false;
+    },
+  );
+});
+
+onSettingsChanged((keys) => {
+  if (keys.includes("domains")) void render();
+void renderInterval();
+  if (keys.includes("intervalSeconds")) void renderInterval();
+});
 chrome.permissions.onAdded.addListener(() => void render());
 chrome.permissions.onRemoved.addListener(() => void render());
 void render();
+void renderInterval();

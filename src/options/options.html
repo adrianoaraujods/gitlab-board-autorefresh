@@ -25,6 +25,20 @@
           <p id="domain-error" class="error" role="alert" hidden></p>
         </form>
       </section>
+
+      <section aria-labelledby="interval-heading">
+        <h2 id="interval-heading">Refresh interval</h2>
+        <p class="hint">How often an unfocused board reloads. Minimum 10 seconds.</p>
+        <form id="interval-form" novalidate>
+          <label for="interval-input">Seconds between reloads</label>
+          <div class="row">
+            <input id="interval-input" type="number" min="10" step="1" inputmode="numeric" />
+            <button type="submit">Save</button>
+          </div>
+          <p id="interval-error" class="error" role="alert" hidden></p>
+          <p id="interval-saved" class="status granted" role="status" hidden>Saved.</p>
+        </form>
+      </section>
     </main>
     <script src="options.js"></script>
   </body>
