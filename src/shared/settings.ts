@@ -1,7 +1,9 @@
 /** Settings stored in chrome.storage.sync, with defaults in DEFAULT_SETTINGS. */
 import { DEFAULT_INTERVAL_SECONDS, normalizeIntervalSeconds } from "../core/refresh-interval";
 import {
+  DEFAULT_SAFETY_NET_MINUTES,
   normalizeDetection,
+  normalizeSafetyNetMinutes,
   normalizeTabMode,
   type Detection,
   type SchedulerSettings,
@@ -19,6 +21,8 @@ export interface Settings {
   detection: Detection;
   /** Whether the user's own edits also reload the board (default false: they are already on screen). */
   refreshAfterOwnEdits: boolean;
+  /** Minutes between safety-net full reloads in smart mode (default 15, 0 = off). */
+  safetyNetMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -27,6 +31,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   mode: "current-tab",
   detection: "smart",
   refreshAfterOwnEdits: false,
+  safetyNetMinutes: DEFAULT_SAFETY_NET_MINUTES,
 });
 
 export async function loadSettings(): Promise<Settings> {
@@ -38,6 +43,7 @@ export async function loadSettings(): Promise<Settings> {
     mode: normalizeTabMode(settings.mode),
     detection: normalizeDetection(settings.detection),
     refreshAfterOwnEdits: settings.refreshAfterOwnEdits === true,
+    safetyNetMinutes: normalizeSafetyNetMinutes(settings.safetyNetMinutes),
   };
 }
 
@@ -46,8 +52,9 @@ export function toSchedulerSettings({
   intervalSeconds,
   mode,
   detection,
-}: Pick<Settings, "intervalSeconds" | "mode" | "detection">): SchedulerSettings {
-  return { intervalMs: intervalSeconds * 1000, mode, detection };
+  safetyNetMinutes,
+}: Pick<Settings, "intervalSeconds" | "mode" | "detection" | "safetyNetMinutes">): SchedulerSettings {
+  return { intervalMs: intervalSeconds * 1000, mode, detection, safetyNetMinutes };
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {

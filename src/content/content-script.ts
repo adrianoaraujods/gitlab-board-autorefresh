@@ -122,7 +122,7 @@ function run(command: SchedulerCommand): void {
     case "set-badge": {
       const { type: _type, ...status } = command;
       lastStatus = status;
-      void sendToBackground({ type: "set-badge", badge: command.badge });
+      void sendToBackground({ type: "set-badge", badge: command.badge, count: command.changedCount });
       return;
     }
     case "persist":
@@ -366,7 +366,7 @@ async function main(): Promise<void> {
   onSettingsChanged((keys) => {
     if (keys.includes("refreshAfterOwnEdits"))
       void loadSettings().then((changed) => (refreshAfterOwnEdits = changed.refreshAfterOwnEdits));
-    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection")) return;
+    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection") && !keys.includes("safetyNetMinutes")) return;
     void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });
 }

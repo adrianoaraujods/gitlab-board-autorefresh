@@ -87,6 +87,17 @@
         </label>
         <p id="own-edits-error" class="error" role="alert" hidden></p>
       </section>
+
+      <section aria-labelledby="safety-net-heading">
+        <h2 id="safety-net-heading">Safety-net reload</h2>
+        <p class="hint">
+          With Smart detection, a full reload this often catches anything detection misses (such as a renamed label
+          colour). 0 turns it off.
+        </p>
+        <label for="safety-net-input">Minutes between full reloads</label>
+        <input id="safety-net-input" type="number" min="0" step="1" inputmode="numeric" />
+        <p id="safety-net-error" class="error" role="alert" hidden></p>
+      </section>
     </main>
     <script src="options.js"></script>
   </body>

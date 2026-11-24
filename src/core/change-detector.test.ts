@@ -19,7 +19,7 @@ describe("Change Detector", () => {
     it("reads a project board from its URL", () => {
       const url = "https://gitlab.example/group/project/-/boards/1?label_name[]=Doing";
       expect(readBoardContext(url, page(url))).toEqual({
-        board: { fullPath: "group/project", boardId: "1", parent: "project" },
+        board: { fullPath: "group/project", boardId: "1", parent: "project", filters: { labelName: ["Doing"] } },
         graphqlUrl: "https://gitlab.example/api/graphql",
       });
     });
@@ -90,6 +90,86 @@ describe("Change Detector", () => {
       });
       expect(query).toMatch(/^query BoardAutoRefreshFingerprint\b/);
       expect(query).not.toMatch(/collapsed/);
+    });
+  });
+
+  describe("URL filters", () => {
+    const BASE = "https://gitlab.example/group/project/-/boards/1";
+    /** The filter variable the request sends for a board URL's query string. */
+    function filtersFor(search: string, base = BASE): unknown {
+      const url = `${base}${search}`;
+      const request = buildFingerprintRequest(readBoardContext(url, page(url))!.board);
+      return (request.variables as Record<string, unknown>).filters;
+    }
+
+    it.each([
+      ["label_name[]=Doing", { labelName: ["Doing"] }],
+      ["label_name[]=Doing&label_name[]=Bug", { labelName: ["Doing", "Bug"] }],
+      ["assignee_username=alice", { assigneeUsername: "alice" }],
+      ["assignee_username[]=alice", { assigneeUsername: "alice" }],
+      ["assignee_username=None", { assigneeWildcardId: "NONE" }],
+      ["assignee_username=Any", { assigneeWildcardId: "ANY" }],
+      ["author_username=bob", { authorUsername: "bob" }],
+      ["milestone_title=v1.0", { milestoneTitle: "v1.0" }],
+      ["milestone_title=None", { milestoneWildcardId: "NONE" }],
+      ["milestone_title=Upcoming", { milestoneWildcardId: "UPCOMING" }],
+      ["milestone_title=%23started", { milestoneWildcardId: "STARTED" }],
+      ["my_reaction_emoji=thumbsup", { myReactionEmoji: "thumbsup" }],
+      ["release_tag=v2", { releaseTag: "v2" }],
+      ["search=login%20bug", { search: "login bug" }],
+      ["weight=3", { weight: "3" }],
+      ["confidential=true", { confidential: true }],
+      ["types[]=ISSUE&types[]=INCIDENT", { types: ["ISSUE", "INCIDENT"] }],
+      ["iteration_id=12", { iterationId: "gid://gitlab/Iteration/12" }],
+      ["not[label_name][]=Won't fix", { not: { labelName: ["Won't fix"] } }],
+      ["not[assignee_username][]=alice", { not: { assigneeUsername: ["alice"] } }],
+      ["not[author_username]=bob", { not: { authorUsername: "bob" } }],
+      ["not[milestone_title]=v1.0", { not: { milestoneTitle: "v1.0" } }],
+      ["not[my_reaction_emoji]=tada", { not: { myReactionEmoji: "tada" } }],
+      ["not[release_tag]=v2", { not: { releaseTag: "v2" } }],
+      ["not[types][]=INCIDENT", { not: { types: ["INCIDENT"] } }],
+    ])("maps %s", (search, expected) => {
+      expect(filtersFor(`?${search}`)).toEqual(expected);
+    });
+
+    it("maps a combination of filters, positive and negated", () => {
+      expect(filtersFor("?label_name[]=Doing&assignee_username=alice&milestone_title=v1&not[label_name][]=Bug&search=x")).toEqual({
+        labelName: ["Doing"],
+        assigneeUsername: "alice",
+        milestoneTitle: "v1",
+        search: "x",
+        not: { labelName: ["Bug"] },
+      });
+    });
+
+    it("sends no filters when the URL has none", () => {
+      expect(filtersFor("")).toBeUndefined();
+    });
+
+    it("ignores params that aren't filters", () => {
+      expect(filtersFor("?utf8=%E2%9C%93&label_name[]=Doing&sort=created_date")).toEqual({ labelName: ["Doing"] });
+      expect(filtersFor("?utf8=%E2%9C%93")).toBeUndefined();
+    });
+
+    it("drops all filters when any param is not recognised, to fetch a superset", () => {
+      expect(filtersFor("?label_name[]=Doing&shiny_new_filter=1")).toBeUndefined();
+      expect(filtersFor("?label_name[]=Doing&not[shiny_new_filter]=1")).toBeUndefined();
+      expect(filtersFor("?label_name[]=Doing&milestone_title=a&milestone_title=b")).toBeUndefined();
+    });
+
+    it("maps filters on a group board", () => {
+      expect(filtersFor("?label_name[]=Doing&author_username=bob", "https://gitlab.example/groups/group/-/boards/7")).toEqual({
+        labelName: ["Doing"],
+        authorUsername: "bob",
+      });
+    });
+
+    it("applies the filters to the lists' cards and counts in the query", () => {
+      const url = `${BASE}?label_name[]=Doing`;
+      const { query } = buildFingerprintRequest(readBoardContext(url, page(url))!.board);
+      expect(query).toMatch(/\$filters: BoardIssueInput/);
+      expect(query).toMatch(/issues\(first: \$first, filters: \$filters\)/);
+      expect(query).toMatch(/lists\(issueFilters: \$filters\)/);
     });
   });
 
@@ -395,6 +475,18 @@ describe("Change Detector", () => {
       });
     });
 
+    describe("reports signed-out when GitLab answers an expired session with no board", () => {
+      it.each([
+        ["a null board", { data: { project: { board: null } } }],
+        ["a null project", { data: { project: null } }],
+        ["a null group", { data: { group: null } }],
+        ["a null group board", { data: { group: { board: null } } }],
+      ])("with %s", (_name, response) => {
+        expect(compareWithProjectBoard(response).kind).toBe("signed-out");
+        expect(compare(null, response).kind).toBe("signed-out");
+      });
+    });
+
     describe("reports the response invalid when", () => {
       it("GraphQL answers with errors", () => {
         expect(compareWithProjectBoard(fixture("graphql-errors")).kind).toBe("invalid");
@@ -410,8 +502,7 @@ describe("Change Detector", () => {
         expect(compareWithProjectBoard(board).kind).toBe("invalid");
       });
 
-      it("there is no board", () => {
-        expect(compareWithProjectBoard({ data: { project: { board: null } } }).kind).toBe("invalid");
+      it("there is no data or it isn't JSON", () => {
         expect(compareWithProjectBoard({ data: null }).kind).toBe("invalid");
         expect(compareWithProjectBoard("<!doctype html>").kind).toBe("invalid");
       });
@@ -448,5 +539,6 @@ function compareWithProjectBoard(response: unknown) {
 function baselineOf(response: unknown) {
   const taken = compare(null, response);
   if (taken.kind === "invalid") throw new Error(`fixture has no fingerprint: ${taken.problem}`);
+  if (taken.kind === "signed-out") throw new Error("fixture has no board");
   return taken.fingerprint;
 }
