@@ -3,7 +3,9 @@
  * issue board (or the sign-in page) on one of the configured origins.
  *
  * Boards are recognised by path only, so GitLab installed under a subpath
- * (e.g. `https://example.com/gitlab`) needs no extra configuration.
+ * (e.g. `https://example.com/gitlab`) needs no extra configuration. Once a
+ * board URL has loaded, `isBoardDocument` tells a board from an error page
+ * served at that URL.
  */
 export type BoardPageKind = "project-board" | "group-board" | "sign-in" | "none";
 
@@ -30,4 +32,17 @@ export function matchBoardPage(url: string, configuredOrigins: readonly string[]
 
 export function isBoardPage(kind: BoardPageKind): boolean {
   return kind === "project-board" || kind === "group-board";
+}
+
+/** Server-rendered markers of a board page (GitLab 19.5 markup; see `fixtures/gitlab-19.5/`). */
+const BOARD_DOCUMENT = [
+  'body[data-page$="boards:index"]',
+  'body[data-page$="boards:show"]',
+  ".boards-app",
+  ".js-focus-mode-board",
+].join(", ");
+
+/** Whether a loaded document carries GitLab's board markup (an HTTP error page at a board URL does not). */
+export function isBoardDocument(document: Document): boolean {
+  return document.querySelector(BOARD_DOCUMENT) !== null;
 }

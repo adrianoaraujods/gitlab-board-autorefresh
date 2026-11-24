@@ -25,7 +25,7 @@
  * snapshot → reload.
  */
 import { detectBlockers } from "../core/blocker-detector";
-import { isBoardPage, matchBoardPage } from "../core/board-page-matcher";
+import { isBoardDocument, isBoardPage, matchBoardPage } from "../core/board-page-matcher";
 import {
   initialSchedulerState,
   transition,
@@ -124,16 +124,8 @@ async function checkReachability(): Promise<boolean> {
 function boardFailedToLoad(): boolean {
   const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
   if ((navigation?.responseStatus ?? 0) >= 400) return true;
-  return document.querySelector(BOARD_DOCUMENT) === null;
+  return !isBoardDocument(document);
 }
-
-/** Server-rendered markers of a board page (see the GitLab 19.5 board DOM notes). */
-const BOARD_DOCUMENT = [
-  'body[data-page$="boards:index"]',
-  'body[data-page$="boards:show"]',
-  ".boards-app",
-  ".js-focus-mode-board",
-].join(", ");
 
 function saveScroll(): void {
   try {
