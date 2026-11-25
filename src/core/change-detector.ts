@@ -288,10 +288,13 @@ const NO_CONTEXT: CompareContext = {
  * fingerprint becomes the baseline.
  *
  * A difference is an `own-edit` (unless `refreshAfterOwnEdits`) when the
- * lists' structure is the same and either every changed card is still on the
- * board and was last updated by the current user, or only the order changed
- * (no card's `updatedAt` moved) after a local drag. Anything else, including
- * a list total that no visible card change explains, is `remote`.
+ * lists' structure is the same and every card that really changed (added,
+ * `updatedAt` moved or in other lists) was last updated by the current user.
+ * Index shifts of otherwise unchanged cards, and removed cards, are only
+ * excused by a local drag; only the order changing after a local drag is an
+ * own edit too. Anything else, including a list total that no visible card
+ * change explains, is `remote`. `changedCount` leaves shifted cards out
+ * unless the order is all that changed.
  */
 export function compare(
   baseline: BoardFingerprint | null,
@@ -307,21 +310,34 @@ export function compare(
   const structureChanged = !sameLists(baseline.lists, fingerprint.lists, (list) => list.key);
   const countsChanged = !sameLists(baseline.lists, fingerprint.lists, (list) => String(list.count));
   if (changedIds.length === 0 && !structureChanged && !countsChanged) return { kind: "unchanged", fingerprint };
+  // A card whose `updatedAt` and lists are unchanged only moved within its lists: an order shift.
+  const genuine = changedIds.filter((id) => !onlyShifted(baseline.cards[id], fingerprint.cards[id]));
   const remote: ChangeDetection = {
     kind: "remote",
-    changedCount: Math.max(changedIds.length, 1),
+    changedCount: Math.max(genuine.length > 0 ? genuine.length : changedIds.length, 1),
     fingerprint,
   };
   if (context.refreshAfterOwnEdits || structureChanged || changedIds.length === 0) return remote;
 
-  const updatedAt = (card: string | undefined) => card?.split(" ")[0];
-  const orderOnly =
-    !countsChanged && changedIds.every((id) => updatedAt(baseline.cards[id]) === updatedAt(fingerprint.cards[id]));
-  if (orderOnly) return context.localDrag ? { kind: "own-edit", fingerprint } : remote;
+  const ownEdit: ChangeDetection = { kind: "own-edit", fingerprint };
+  if (genuine.length === 0) return !countsChanged && context.localDrag ? ownEdit : remote;
+  // Order shifts and removed cards are only explained by a drag of mine.
+  const shifted = genuine.length < changedIds.length;
+  const removed = genuine.some((id) => !(id in fingerprint.cards));
+  if ((shifted || removed) && !context.localDrag) return remote;
   const allMine =
     context.currentUserId !== null &&
-    changedIds.every((id) => id in fingerprint.cards && editors.get(id) === context.currentUserId);
-  return allMine ? { kind: "own-edit", fingerprint } : remote;
+    genuine.every((id) => !(id in fingerprint.cards) || editors.get(id) === context.currentUserId);
+  return allMine ? ownEdit : remote;
+}
+
+/** Whether a card is on the same lists with the same `updatedAt` in both entries (only its order index differs). */
+function onlyShifted(before: string | undefined, after: string | undefined): boolean {
+  if (before === undefined || after === undefined) return false;
+  const [updatedBefore, ...placesBefore] = before.split(" ");
+  const [updatedAfter, ...placesAfter] = after.split(" ");
+  const lists = (places: string[]) => places.map((place) => place.slice(0, place.lastIndexOf("#"))).join(" ");
+  return updatedBefore === updatedAfter && lists(placesBefore) === lists(placesAfter);
 }
 
 function changedCardIds(before: Record<string, string>, after: Record<string, string>): string[] {

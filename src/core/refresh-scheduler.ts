@@ -152,6 +152,11 @@ export interface SchedulerState {
    */
   phase: "starting" | "running" | "reloading";
   settings: SchedulerSettings;
+  /**
+   * Epoch ms the page loaded, or `null` before the first load. The safety net
+   * counts from it, not from `lastReloadAt`, which a failed check moves for the backoff.
+   */
+  loadedAt: number | null;
   /** Whether the page has DOM focus (`window` focus/blur). */
   focused: boolean;
   /**
@@ -304,6 +309,7 @@ export function initialSchedulerState(settings: SchedulerSettings): SchedulerSta
   return {
     phase: "starting",
     settings,
+    loadedAt: null,
     focused: false,
     windowFocused: false,
     signedOut: false,
@@ -326,7 +332,9 @@ export function transition(state: SchedulerState, event: SchedulerEvent, now: nu
   const result = takeBaselineIfMissing(realise(applied, plan(applied, now), now), event);
   // A new failure count is stored at once, so the backoff survives the error page being reloaded.
   const storedChanged =
-    failures(applied) !== failures(state) || applied.persisted.pending?.changedCount !== state.persisted.pending?.changedCount;
+    failures(applied) !== failures(state) ||
+    applied.persisted.pending?.changedCount !== state.persisted.pending?.changedCount ||
+    applied.persisted.pending?.fingerprint !== state.persisted.pending?.fingerprint;
   if (storedChanged && !result.commands.some((c) => c.type === "persist")) {
     result.commands.unshift({ type: "persist", state: applied.persisted });
   }
@@ -369,6 +377,7 @@ export function applyEvent(state: SchedulerState, event: SchedulerEvent, now: nu
       return {
         ...state,
         phase: "running",
+        loadedAt: now,
         focused: event.focused,
         windowFocused: event.windowFocused ?? false,
         signedOut: page === "sign-in",
@@ -473,8 +482,12 @@ function changesChecked(
       // Degraded: reload like v1 now and on later ticks, checking each time until a response is valid.
       return { ...state, reloadCheck: "changed", pendingApply: null, persisted: { ...state.persisted, degraded: true } };
     default:
-      // Focused: nothing to apply, just look again an interval later.
-      if (isFocused(state)) return { ...state, reloadCheck: "idle", lastCheckAt: now };
+      // Focused: nothing to apply; a failed request backs off like a failed reload, red until it works.
+      if (isFocused(state)) {
+        if (detection !== null) return { ...state, reloadCheck: "idle", lastCheckAt: now };
+        const persisted = withFailures({ ...state.persisted, lastReloadAt: now }, failures(state) + 1);
+        return { ...state, reloadCheck: "idle", lastCheckAt: now, persisted };
+      }
       // A failed request or a response detection can't read: reload like v1. A failed
       // request then fails the reachability check too, and backs off.
       return { ...state, reloadCheck: "changed", pendingApply: null };
@@ -520,9 +533,12 @@ function focusedStatus(state: SchedulerState): SchedulerStatus {
 
 /** In "Current tab" mode only the visible, active tab of its window refreshes. */
 const haltUnlessCurrentTab: HaltRule = (state) =>
-  state.settings.mode === "current-tab" && !(state.visible && state.active)
-    ? { badge: "idle", reason: "not-current-tab" }
-    : null;
+  isCurrentTab(state) ? null : { badge: "idle", reason: "not-current-tab" };
+
+/** Whether this tab refreshes by the tab mode: always in "All tabs", only the visible, active tab in "Current tab". */
+function isCurrentTab(state: SchedulerState): boolean {
+  return state.settings.mode !== "current-tab" || (state.visible && state.active);
+}
 
 const haltWhenSignedOut: HaltRule = (state) => (state.signedOut ? { badge: "error", reason: "signed-out" } : null);
 
@@ -536,7 +552,7 @@ export function plan(state: SchedulerState, now: number): Plan {
   if (state.phase !== "running") return { kind: "frozen" };
   for (const rule of HALT_RULES) {
     const status = rule(state);
-    if (status === FOCUSED && detecting(state)) return planFocusedChecks(state, now);
+    if (status === FOCUSED && detecting(state) && isCurrentTab(state)) return planFocusedChecks(state, now);
     if (status) return { kind: "halted", status: keepRedWhileFailing(state, status) };
   }
   const dueAt = nextDueAt(state);
@@ -651,8 +667,8 @@ function dueStep(state: SchedulerState, now: number): DueStep {
 /** Smart mode's safety net (#16): enough time since the last full load that this tick reloads without asking detection. */
 function safetyNetUp(state: SchedulerState, now: number): boolean {
   const minutes = state.settings.safetyNetMinutes ?? 0;
-  const { lastReloadAt } = state.persisted;
-  return minutes > 0 && lastReloadAt !== null && now - lastReloadAt >= minutes * 60_000;
+  const { loadedAt } = state;
+  return minutes > 0 && loadedAt !== null && now - loadedAt >= minutes * 60_000;
 }
 
 const DUE_STEPS: Record<ReloadCheck, DueStep> = {

@@ -54,7 +54,7 @@ import {
 } from "../core/refresh-scheduler";
 import { restoreScrollSnapshot, saveScrollSnapshot } from "../core/scroll-snapshot";
 import { sendToBackground, type StatusReply, type ToContentMessage } from "../shared/messages";
-import { loadSettings, onSettingsChanged, toSchedulerSettings } from "../shared/settings";
+import { loadSettings, onSettingsChanged, toSchedulerSettings, type Settings } from "../shared/settings";
 
 /** sessionStorage is per tab and survives reloads, which is exactly the lifetime we need. */
 const PERSIST_KEY = "gitlab-board-autorefresh:scheduler";
@@ -67,6 +67,8 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let localDrag = false;
 /** The "Refresh after my own edits" setting. */
 let refreshAfterOwnEdits = false;
+/** The settings the Refresh Scheduler reads: a change to any of them is a `settings-changed` event. */
+const SCHEDULER_SETTING_KEYS: (keyof Settings)[] = ["intervalSeconds", "mode", "detection", "safetyNetMinutes"];
 /** The last status sent to the badge, reported to the popup. */
 let lastStatus: SchedulerStatus | null = null;
 
@@ -83,11 +85,7 @@ function run(command: SchedulerCommand): void {
       void checkReachability().then((reachable) =>
         dispatch(
           reachable
-            ? {
-                type: "reachability-checked",
-                reachable,
-                reasons: [...detectBlockers(document)],
-              }
+            ? { type: "reachability-checked", reachable, reasons: [...detectBlockers(document)] }
             : { type: "reachability-checked", reachable },
         ),
       );
@@ -115,12 +113,7 @@ function run(command: SchedulerCommand): void {
       return;
     case "check-blockers":
       // Answer once the current dispatch has finished running its commands.
-      queueMicrotask(() =>
-        dispatch({
-          type: "blockers-checked",
-          reasons: [...detectBlockers(document)],
-        }),
-      );
+      queueMicrotask(() => dispatch({ type: "blockers-checked", reasons: [...detectBlockers(document)] }));
       return;
     case "set-badge": {
       const { type: _type, ...status } = command;
@@ -145,11 +138,9 @@ async function applyChanges(): Promise<SchedulerEvent> {
     if ((await loadSettings()).updateInPlace) {
       const reply = await sendToBackground({ type: "refetch-board" });
       if (reply?.ok === true) {
-        const checked = await checkChanges(null);
-        const fingerprint =
-          checked.type === "changes-checked" && checked.reachable && (checked.detection.kind === "unchanged" || checked.detection.kind === "remote")
-            ? checked.detection.fingerprint
-            : undefined;
+        const fingerprint = await freshFingerprint();
+        // The board shows what the server has now, so a drag of mine is accounted for.
+        localDrag = false;
         return { type: "changes-applied", applied: true, ...(fingerprint && { fingerprint }) };
       }
     }
@@ -157,6 +148,14 @@ async function applyChanges(): Promise<SchedulerEvent> {
     // Fall through: reload.
   }
   return { type: "changes-applied", applied: false };
+}
+
+/** The board's current fingerprint, or `undefined` if the check failed or couldn't be read. */
+async function freshFingerprint(): Promise<BoardFingerprint | undefined> {
+  const checked = await checkChanges(null);
+  if (checked.type !== "changes-checked" || !checked.reachable) return undefined;
+  const { detection } = checked;
+  return detection.kind === "unchanged" || detection.kind === "remote" ? detection.fingerprint : undefined;
 }
 
 /** How long the pre-reload reachability check may take before it counts as failed. */
@@ -188,8 +187,8 @@ async function checkChanges(baseline: BoardFingerprint | null): Promise<Schedule
     return { type: "changes-checked", reachable: true, detection: { kind: "invalid", problem: "no board id in the URL" } };
   }
   const { query, variables } = buildFingerprintRequest(page.board);
+  // A drag of mine is only used up once the baseline advances to a result that took it into account.
   const drag = localDrag;
-  localDrag = false;
   let response: Response;
   try {
     response = await fetch(page.graphqlUrl, {
@@ -208,12 +207,16 @@ async function checkChanges(baseline: BoardFingerprint | null): Promise<Schedule
       signal: AbortSignal.timeout(CHECK_CHANGES_TIMEOUT_MS),
     });
   } catch {
-    localDrag ||= drag;
+    // A network error or timeout: the server couldn't be asked.
     return { type: "changes-checked", reachable: false };
   }
   if (!response.ok) {
-    localDrag ||= drag;
-    return { type: "changes-checked", reachable: false };
+    // The server answered with an HTTP error: detection can't read it, but the server is up.
+    return {
+      type: "changes-checked",
+      reachable: true,
+      detection: { kind: "invalid", problem: `HTTP ${response.status}` },
+    };
   }
   // A body that isn't JSON is a response detection can't read.
   const body: unknown = await response.json().catch(() => null);
@@ -222,7 +225,7 @@ async function checkChanges(baseline: BoardFingerprint | null): Promise<Schedule
     localDrag: drag,
     refreshAfterOwnEdits,
   });
-  if (detection.kind === "invalid") localDrag ||= drag;
+  if (baseline !== null && (detection.kind === "unchanged" || detection.kind === "own-edit")) localDrag = false;
   return { type: "changes-checked", reachable: true, detection };
 }
 
@@ -243,10 +246,7 @@ function boardFailedToLoad(): boolean {
 
 function saveScroll(): void {
   try {
-    saveScrollSnapshot(document, sessionStorage, {
-      url: location.href,
-      now: Date.now(),
-    });
+    saveScrollSnapshot(document, sessionStorage, { url: location.href, now: Date.now() });
   } catch {
     // Storage unavailable or full: reload anyway, the board just starts at the top.
   }
@@ -345,11 +345,7 @@ async function main(): Promise<void> {
         return;
       case "window-focus-changed":
         if (state === undefined) pendingWindowFocused = message.focused;
-        else
-          dispatch({
-            type: "window-focus-changed",
-            focused: message.focused,
-          });
+        else dispatch({ type: "window-focus-changed", focused: message.focused });
         return;
       case "get-status":
         sendResponse({ status: lastStatus } satisfies StatusReply);
@@ -366,10 +362,7 @@ async function main(): Promise<void> {
     windowFocused: pendingWindowFocused ?? windowFocused,
     visible: document.visibilityState === "visible",
     active: pendingActive ?? active,
-    restored: {
-      ...(restored ?? { lastReloadAt: null }),
-      paused: pendingPaused ?? paused,
-    },
+    restored: { ...(restored ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
   });
 
   // A finished card drag (SortableJS fires these on the dragged card) is the user's own reorder.
@@ -386,15 +379,12 @@ async function main(): Promise<void> {
   window.addEventListener("focus", () => dispatch({ type: "focus-changed", focused: true }));
   window.addEventListener("blur", () => void onBlur());
   document.addEventListener("visibilitychange", () =>
-    dispatch({
-      type: "visibility-changed",
-      visible: document.visibilityState === "visible",
-    }),
+    dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
   );
   onSettingsChanged((keys) => {
     if (keys.includes("refreshAfterOwnEdits"))
       void loadSettings().then((changed) => (refreshAfterOwnEdits = changed.refreshAfterOwnEdits));
-    if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection") && !keys.includes("safetyNetMinutes")) return;
+    if (!SCHEDULER_SETTING_KEYS.some((key) => keys.includes(key))) return;
     void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });
 }
