@@ -20,6 +20,12 @@ GitLab Inc.
 - **Always reload** (option): reloads every interval like v1, changed or not. If a check's answer isn't what the
   extension expects (for example after a GitLab upgrade changed the API), or the board URL has no board id
   (`/-/boards` instead of `/-/boards/<id>`), it reloads like this too.
+- **Focused board: a blue badge instead of a reload.** In smart mode a focused board keeps being checked; changes
+  by others show as a blue badge with the number of changed cards and are applied once you leave the window.
+- **Your own edits don't reload the board.** Cards you added, edited or dragged yourself are already on screen, so
+  they never trigger a reload (turn on "Refresh after my own edits" to reload for them too).
+- **Safety net.** In smart mode the board is fully reloaded anyway every 15 minutes (configurable, 0 = off), in case
+  a change wasn't detected.
 - **Never interrupts editing.** A reload is skipped while the issue sidebar is open, a text field has unsaved
   content, a modal or dropdown is open, or a card is being dragged. It retries on the next interval.
 - **Keeps your place.** Filters in the board URL are kept, and the page scroll and each list's scroll are restored.
@@ -35,6 +41,7 @@ GitLab Inc.
 | Green | Auto-refresh active: the window is unfocused and the board is checked (or reloaded) every interval |
 | Grey | Idle: the window is focused, the tab is paused, or (in "Current tab" mode) it is not the visible tab |
 | None | Not a board page |
+| Blue | Changes by others are waiting while the board is focused; they apply when you leave the window |
 | Yellow | A reload was skipped because you are editing |
 | Red | Signed out, or reloads are failing |
 
@@ -63,6 +70,11 @@ Open the extension's options (from the popup, or **Details → Extension options
   - **Smart** (default): checks for changes with one small request and reloads only when the board changed.
   - **Always reload**: reloads every interval, changed or not (v1 behaviour).
 
+- **Refresh after my own edits:** off by default; when on, your own changes also reload the board.
+- **Safety-net reload:** minutes between full reloads in smart mode (default 15, 0 = off).
+- **Update in place (experimental):** off by default; applies detected changes through the board's own data layer
+  instead of reloading the page, and falls back to a reload if that isn't possible.
+
 Settings sync across your Chrome profiles through Chrome sync.
 
 ## Privacy and permissions
@@ -73,7 +85,7 @@ every GitLab origin is an optional permission you grant from the options page.
 | Permission | Why |
 | --- | --- |
 | `storage` | Settings (`chrome.storage.sync`) and per-tab pause state (`chrome.storage.session`) |
-| `scripting` | Registers the content script only on the origins you granted |
+| `scripting` | Registers the content script only on the origins you granted; with experimental "Update in place" on, asks the board page's own data layer to refetch |
 | Optional `https://*/*`, `http://*/*` | Lets you grant your own GitLab origin; requested per origin, on click |
 
 ## Known limitations

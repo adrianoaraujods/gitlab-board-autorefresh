@@ -452,6 +452,37 @@ describe("Change Detector", () => {
         expect(compareAs(reordered, { localDrag: true, refreshAfterOwnEdits: true }).kind).toBe("remote");
       });
 
+      /** A card added at the top of list 1: everything below shifts down one place. */
+      const addedAtTop = (by: string) => (lists: any[]) => {
+        const added = structuredClone(lists[1].issues.nodes[0]);
+        added.id = "gid://gitlab/Issue/9999";
+        added.updatedAt = "2026-11-23T10:00:00Z";
+        added.updatedBy = { id: by };
+        lists[1].issues.nodes.unshift(added);
+        lists[1].issuesCount += 1;
+      };
+
+      it("is an own edit when I add a card above others and dragged, whatever the shifts below", () => {
+        expect(compareAs(edited(addedAtTop(ME)), { localDrag: true }).kind).toBe("own-edit");
+      });
+
+      it("is remote when someone else added the card, even with a drag of mine", () => {
+        expect(compareAs(edited(addedAtTop("gid://gitlab/User/2")), { localDrag: true }).kind).toBe("remote");
+      });
+
+      it("counts only the added card, not the cards it shifted", () => {
+        expect(compareAs(edited(addedAtTop("gid://gitlab/User/2")))).toMatchObject({ kind: "remote", changedCount: 1 });
+      });
+
+      it("is an own edit when I removed a card after a local drag", () => {
+        const board = edited((lists) => {
+          lists[1].issues.nodes.splice(0, 1);
+          lists[1].issuesCount -= 1;
+        });
+        expect(compareAs(board, { localDrag: true }).kind).toBe("own-edit");
+        expect(compareAs(board, { localDrag: false }).kind).toBe("remote");
+      });
+
       it("leaves an unchanged board unchanged", () => {
         expect(compareAs(fixture("graphql-project-board")).kind).toBe("unchanged");
       });

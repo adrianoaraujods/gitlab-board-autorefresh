@@ -1348,3 +1348,54 @@ describe("normalizeSafetyNetMinutes", () => {
     expect(normalizeSafetyNetMinutes(value)).toBe(minutes);
   });
 });
+
+describe("Refresh Scheduler: review fixes (#10)", () => {
+  /** A smart tab that loaded focused at T0 and took its baseline. */
+  function focusedSmart() {
+    const s = smartScheduler();
+    s.send({ type: "page-loaded", focused: true, restored: { lastReloadAt: T0 } }, T0);
+    s.send(UNCHANGED_AT_LOAD, T0);
+    return s;
+  }
+
+  it("backs off and shows red when a check request fails while focused", () => {
+    const s = focusedSmart();
+    s.send({ type: "timer-fired" }, T0 + INTERVAL);
+    const commands = s.send(CHECK_FAILED, T0 + INTERVAL);
+    expect(commands).toContainEqual({ type: "set-badge", badge: "error", reason: "reload-failed" });
+    expect(commands).toContainEqual({ type: "schedule-timer", delayMs: 2 * INTERVAL });
+    expect(commands).toContainEqual({
+      type: "persist",
+      state: expect.objectContaining({ consecutiveFailures: 1 }),
+    });
+  });
+
+  it("does not check in a non-current tab of a focused window in Current tab mode", () => {
+    const s = smartScheduler();
+    s.send({ type: "page-loaded", focused: false, windowFocused: true, active: false, restored: { lastReloadAt: T0 } }, T0);
+    s.send(UNCHANGED_AT_LOAD, T0);
+    expect(s.send({ type: "timer-fired" }, T0 + INTERVAL)).toEqual([]);
+  });
+
+  it("keeps the safety-net clock from the last full load when a reachability check fails", () => {
+    const s = safetyNetBoardLoadedAt(2);
+    checkUnchangedUntil(s, T0 + INTERVAL, T0 + 2 * MINUTE);
+    s.send({ type: "timer-fired" }, T0 + 2 * MINUTE);
+    s.send(NOTHING_BLOCKING, T0 + 2 * MINUTE);
+    s.send(UNREACHABLE, T0 + 2 * MINUTE);
+    expect(s.send({ type: "timer-fired" }, T0 + 3 * MINUTE)).toEqual([{ type: "check-blockers" }]);
+  });
+
+  it("persists pending again when the waiting fingerprint changes but the count stays", () => {
+    const s = focusedSmart();
+    s.send({ type: "timer-fired" }, T0 + INTERVAL);
+    s.send(CHANGED, T0 + INTERVAL);
+    s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL);
+    const newer = { lists: [], cards: { "gid://gitlab/Issue/1": "c" } } satisfies BoardFingerprint;
+    const commands = s.send(checked({ kind: "remote", changedCount: 2, fingerprint: newer }), T0 + 2 * INTERVAL);
+    expect(commands).toContainEqual({
+      type: "persist",
+      state: expect.objectContaining({ pending: { changedCount: 2, fingerprint: newer } }),
+    });
+  });
+});
