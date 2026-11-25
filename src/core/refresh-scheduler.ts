@@ -444,6 +444,7 @@ function changesChecked(
     case "signed-out":
       // Halts like the sign-in page: never a change, never a reload.
       return { ...state, reloadCheck: "idle", signedOut: true };
+    case "own-edit": // Already on the user's screen: the new baseline, no reload.
     case "unchanged": {
       // The server answered, so earlier failures are over; the next check is an interval from now.
       const { pending: _gone, ...rest } = state.persisted;

@@ -29,10 +29,20 @@
  * page's CSRF token, built and compared by the Change Detector. A failed
  * request is reported as such; a board URL without a board id can't be
  * fingerprinted and answers `invalid` (the scheduler then reloads like v1).
+ *
+ * Own edits (#15): the current user id is read from the page, and card
+ * drag-end/drop events on the board are noted as "a local drag finished", both
+ * handed to the Change Detector with the "Refresh after my own edits" setting.
  */
 import { detectBlockers } from "../core/blocker-detector";
 import { isBoardDocument, isBoardPage, matchBoardPage } from "../core/board-page-matcher";
-import { buildFingerprintRequest, compare, readBoardContext, type BoardFingerprint } from "../core/change-detector";
+import {
+  buildFingerprintRequest,
+  compare,
+  readBoardContext,
+  readCurrentUserId,
+  type BoardFingerprint,
+} from "../core/change-detector";
 import {
   initialSchedulerState,
   transition,
@@ -53,6 +63,10 @@ const SCROLL_RESTORE_TIMEOUT_MS = 10_000;
 
 let state: SchedulerState | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
+/** A card drag finished in this tab since the last check that read a response. */
+let localDrag = false;
+/** The "Refresh after my own edits" setting. */
+let refreshAfterOwnEdits = false;
 /** The last status sent to the badge, reported to the popup. */
 let lastStatus: SchedulerStatus | null = null;
 
@@ -69,7 +83,11 @@ function run(command: SchedulerCommand): void {
       void checkReachability().then((reachable) =>
         dispatch(
           reachable
-            ? { type: "reachability-checked", reachable, reasons: [...detectBlockers(document)] }
+            ? {
+                type: "reachability-checked",
+                reachable,
+                reasons: [...detectBlockers(document)],
+              }
             : { type: "reachability-checked", reachable },
         ),
       );
@@ -97,7 +115,12 @@ function run(command: SchedulerCommand): void {
       return;
     case "check-blockers":
       // Answer once the current dispatch has finished running its commands.
-      queueMicrotask(() => dispatch({ type: "blockers-checked", reasons: [...detectBlockers(document)] }));
+      queueMicrotask(() =>
+        dispatch({
+          type: "blockers-checked",
+          reasons: [...detectBlockers(document)],
+        }),
+      );
       return;
     case "set-badge": {
       const { type: _type, ...status } = command;
@@ -165,23 +188,42 @@ async function checkChanges(baseline: BoardFingerprint | null): Promise<Schedule
     return { type: "changes-checked", reachable: true, detection: { kind: "invalid", problem: "no board id in the URL" } };
   }
   const { query, variables } = buildFingerprintRequest(page.board);
+  const drag = localDrag;
+  localDrag = false;
   let response: Response;
   try {
     response = await fetch(page.graphqlUrl, {
       method: "POST",
       credentials: "same-origin",
       cache: "no-store",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
-      body: JSON.stringify({ operationName: "BoardAutoRefreshFingerprint", query, variables }),
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken(),
+      },
+      body: JSON.stringify({
+        operationName: "BoardAutoRefreshFingerprint",
+        query,
+        variables,
+      }),
       signal: AbortSignal.timeout(CHECK_CHANGES_TIMEOUT_MS),
     });
   } catch {
+    localDrag ||= drag;
     return { type: "changes-checked", reachable: false };
   }
-  if (!response.ok) return { type: "changes-checked", reachable: false };
+  if (!response.ok) {
+    localDrag ||= drag;
+    return { type: "changes-checked", reachable: false };
+  }
   // A body that isn't JSON is a response detection can't read.
   const body: unknown = await response.json().catch(() => null);
-  return { type: "changes-checked", reachable: true, detection: compare(baseline, body) };
+  const detection = compare(baseline, body, {
+    currentUserId: readCurrentUserId(document),
+    localDrag: drag,
+    refreshAfterOwnEdits,
+  });
+  if (detection.kind === "invalid") localDrag ||= drag;
+  return { type: "changes-checked", reachable: true, detection };
 }
 
 /** GitLab's CSRF token from the page head, sent as `X-CSRF-Token` like GitLab's own GraphQL client. */
@@ -201,7 +243,10 @@ function boardFailedToLoad(): boolean {
 
 function saveScroll(): void {
   try {
-    saveScrollSnapshot(document, sessionStorage, { url: location.href, now: Date.now() });
+    saveScrollSnapshot(document, sessionStorage, {
+      url: location.href,
+      now: Date.now(),
+    });
   } catch {
     // Storage unavailable or full: reload anyway, the board just starts at the top.
   }
@@ -271,6 +316,7 @@ async function onBlur(): Promise<void> {
 
 async function main(): Promise<void> {
   const settings = await loadSettings();
+  refreshAfterOwnEdits = settings.refreshAfterOwnEdits;
   const kind = matchBoardPage(location.href, settings.domains);
   const restored = readPersisted();
   // The sign-in page in a tab that was refreshing a board means its session expired: report it (red badge).
@@ -299,7 +345,11 @@ async function main(): Promise<void> {
         return;
       case "window-focus-changed":
         if (state === undefined) pendingWindowFocused = message.focused;
-        else dispatch({ type: "window-focus-changed", focused: message.focused });
+        else
+          dispatch({
+            type: "window-focus-changed",
+            focused: message.focused,
+          });
         return;
       case "get-status":
         sendResponse({ status: lastStatus } satisfies StatusReply);
@@ -316,15 +366,34 @@ async function main(): Promise<void> {
     windowFocused: pendingWindowFocused ?? windowFocused,
     visible: document.visibilityState === "visible",
     active: pendingActive ?? active,
-    restored: { ...(restored ?? { lastReloadAt: null }), paused: pendingPaused ?? paused },
+    restored: {
+      ...(restored ?? { lastReloadAt: null }),
+      paused: pendingPaused ?? paused,
+    },
   });
 
+  // A finished card drag (SortableJS fires these on the dragged card) is the user's own reorder.
+  for (const type of ["dragend", "drop"]) {
+    document.addEventListener(
+      type,
+      (event) => {
+        if (event.target instanceof Element && event.target.closest(".board-card, .board-list, .boards-list"))
+          localDrag = true;
+      },
+      true,
+    );
+  }
   window.addEventListener("focus", () => dispatch({ type: "focus-changed", focused: true }));
   window.addEventListener("blur", () => void onBlur());
   document.addEventListener("visibilitychange", () =>
-    dispatch({ type: "visibility-changed", visible: document.visibilityState === "visible" }),
+    dispatch({
+      type: "visibility-changed",
+      visible: document.visibilityState === "visible",
+    }),
   );
   onSettingsChanged((keys) => {
+    if (keys.includes("refreshAfterOwnEdits"))
+      void loadSettings().then((changed) => (refreshAfterOwnEdits = changed.refreshAfterOwnEdits));
     if (!keys.includes("intervalSeconds") && !keys.includes("mode") && !keys.includes("detection") && !keys.includes("safetyNetMinutes")) return;
     void loadSettings().then((changed) => dispatch({ type: "settings-changed", settings: toSchedulerSettings(changed) }));
   });

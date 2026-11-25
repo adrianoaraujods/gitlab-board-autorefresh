@@ -875,6 +875,17 @@ describe("Refresh Scheduler: smart detection", () => {
       expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL)).toEqual([{ type: "check-changes", baseline: BOARD_LATER }]);
     });
 
+    it("doesn't reload for my own edit, stays green, and takes it as the new baseline", () => {
+      const s = smartBoardLoadedAt(T0);
+      s.send({ type: "timer-fired" }, T0 + INTERVAL);
+      expect(s.send(checked({ kind: "own-edit", fingerprint: BOARD_LATER }), T0 + INTERVAL + SECOND)).toEqual([
+        { type: "schedule-timer", delayMs: INTERVAL },
+      ]);
+      expect(s.send({ type: "timer-fired" }, T0 + 2 * INTERVAL + SECOND)).toEqual([
+        { type: "check-changes", baseline: BOARD_LATER },
+      ]);
+    });
+
     it("applies a change with apply-changes, through the blocker and reachability checks", () => {
       const s = smartBoardLoadedAt(T0);
       s.send({ type: "timer-fired" }, T0 + INTERVAL);

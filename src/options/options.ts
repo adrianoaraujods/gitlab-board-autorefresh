@@ -161,6 +161,22 @@ updateInPlaceInput.addEventListener("change", () => {
   });
 });
 
+const ownEditsInput = document.querySelector<HTMLInputElement>("#own-edits-input")!;
+const ownEditsError = document.querySelector<HTMLParagraphElement>("#own-edits-error")!;
+
+async function renderOwnEdits(): Promise<void> {
+  ownEditsInput.checked = (await loadSettings()).refreshAfterOwnEdits;
+}
+
+ownEditsInput.addEventListener("change", () => {
+  ownEditsError.hidden = true;
+  saveSettings({ refreshAfterOwnEdits: ownEditsInput.checked }).catch((error: unknown) => {
+    ownEditsError.textContent = errorMessage(error);
+    ownEditsError.hidden = false;
+    void renderOwnEdits();
+  });
+});
+
 onSettingsChanged((keys) => {
   if (keys.includes("updateInPlace")) void renderUpdateInPlace();
   if (keys.includes("domains")) void render();
@@ -168,6 +184,7 @@ onSettingsChanged((keys) => {
   if (keys.includes("mode")) void renderMode();
 void renderDetection();
   if (keys.includes("detection")) void renderDetection();
+  if (keys.includes("refreshAfterOwnEdits")) void renderOwnEdits();
 });
 chrome.permissions.onAdded.addListener(() => void render());
 chrome.permissions.onRemoved.addListener(() => void render());
@@ -175,6 +192,7 @@ void render();
 void renderInterval();
 void renderMode();
 void renderDetection();
+void renderOwnEdits();
 
 const safetyNetInput = document.querySelector<HTMLInputElement>("#safety-net-input")!;
 const safetyNetError = document.querySelector<HTMLParagraphElement>("#safety-net-error")!;

@@ -21,6 +21,8 @@ export interface Settings {
   detection: Detection;
   /** Experimental: apply detected changes through the board's data layer instead of reloading (default off). */
   updateInPlace: boolean;
+  /** Whether the user's own edits also reload the board (default false: they are already on screen). */
+  refreshAfterOwnEdits: boolean;
   /** Minutes between safety-net full reloads in smart mode (default 15, 0 = off). */
   safetyNetMinutes: number;
 }
@@ -31,6 +33,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   mode: "current-tab",
   detection: "smart",
   updateInPlace: false,
+  refreshAfterOwnEdits: false,
   safetyNetMinutes: DEFAULT_SAFETY_NET_MINUTES,
 });
 
@@ -43,6 +46,7 @@ export async function loadSettings(): Promise<Settings> {
     mode: normalizeTabMode(settings.mode),
     detection: normalizeDetection(settings.detection),
     updateInPlace: settings.updateInPlace === true,
+    refreshAfterOwnEdits: settings.refreshAfterOwnEdits === true,
     safetyNetMinutes: normalizeSafetyNetMinutes(settings.safetyNetMinutes),
   };
 }
