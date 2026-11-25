@@ -72,8 +72,22 @@ const SCHEDULER_SETTING_KEYS: (keyof Settings)[] = ["intervalSeconds", "mode", "
 /** The last status sent to the badge, reported to the popup. */
 let lastStatus: SchedulerStatus | null = null;
 
+/**
+ * Whether this script still belongs to a live extension. Reloading or updating
+ * the extension orphans the copy running in open tabs: its `chrome.*` calls
+ * then throw "Extension context invalidated". The orphan stops for good (timer
+ * cleared, events ignored); the tab's next load runs the new version.
+ */
+function extensionAlive(): boolean {
+  if (chrome.runtime?.id !== undefined) return true;
+  clearTimeout(timer);
+  timer = undefined;
+  state = undefined;
+  return false;
+}
+
 function dispatch(event: SchedulerEvent): void {
-  if (state === undefined) return;
+  if (state === undefined || !extensionAlive()) return;
   const result = transition(state, event, Date.now());
   state = result.state;
   for (const command of result.commands) run(command);
@@ -118,7 +132,8 @@ function run(command: SchedulerCommand): void {
     case "set-badge": {
       const { type: _type, ...status } = command;
       lastStatus = status;
-      void sendToBackground({ type: "set-badge", badge: command.badge, count: command.changedCount });
+      // The extension may be reloading: a badge that can't be set is not worth an error.
+      sendToBackground({ type: "set-badge", badge: command.badge, count: command.changedCount }).catch(() => {});
       return;
     }
     case "persist":

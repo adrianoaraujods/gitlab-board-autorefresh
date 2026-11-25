@@ -94,10 +94,18 @@ export type ContentReply<M extends ToContentMessage> = ContentReplies[M["type"]]
 
 /**
  * Sends to the background worker and resolves with the reply for that message
- * type, or `undefined` if nothing answered.
+ * type, or `undefined` if nothing answered. A content script orphaned by an
+ * extension reload or update has no worker to talk to: it gets `undefined`
+ * too, instead of an "Extension context invalidated" error.
  */
-export function sendToBackground<M extends BackgroundMessage>(message: M): Promise<BackgroundReply<M> | undefined> {
-  return chrome.runtime.sendMessage(message);
+export async function sendToBackground<M extends BackgroundMessage>(message: M): Promise<BackgroundReply<M> | undefined> {
+  if (chrome.runtime?.id === undefined) return undefined;
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Extension context invalidated")) return undefined;
+    throw error;
+  }
 }
 
 /**
