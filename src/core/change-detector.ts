@@ -34,12 +34,13 @@ export interface BoardPageContext {
   graphqlUrl: string;
 }
 
-const BOARD_PATH = /^(?<owner>\/.*?)\/-\/boards\/(?<boardId>\d+)\/?$/;
+const BOARD_PATH = /^(?<owner>\/.*?)\/-\/boards(?:\/(?<boardId>\d+))?\/?$/;
 
 /**
  * Reads the board context from a board page. The board id comes from the URL
- * (`/-/boards/<id>`); a board URL without one gives `null`, since the page
- * doesn't say which board GitLab picked. The full path comes from the
+ * (`/-/boards/<id>`), or, for `/-/boards`, which shows the default board
+ * without redirecting, from the `data-board-id` GitLab sets on the board app
+ * root; with neither it gives `null`. The full path comes from the
  * `data-project-full-path` / `data-group-full-path` body attributes GitLab
  * sets, which also reveal a subpath install; without them the URL's owner
  * path is taken as the full path.
@@ -49,7 +50,8 @@ export function readBoardContext(url: string, document: Document): BoardPageCont
   const match = BOARD_PATH.exec(pathname);
   if (!match?.groups) return null;
   const owner = decodeURIComponent(match.groups.owner ?? "");
-  const boardId = match.groups.boardId ?? "";
+  const boardId = match.groups.boardId ?? boardIdOnPage(document);
+  if (boardId === null) return null;
   const { projectFullPath, groupFullPath } = document.body?.dataset ?? {};
 
   const parent = projectFullPath ? "project" : groupFullPath ? "group" : /(^|\/)groups\//.test(owner) ? "group" : "project";
@@ -63,6 +65,12 @@ export function readBoardContext(url: string, document: Document): BoardPageCont
     board: { fullPath, boardId, parent, ...filtersOf(new URL(url).searchParams) },
     graphqlUrl: `${origin}${root}/api/graphql`,
   };
+}
+
+/** The numeric board id on the board app root (`data-board-id`), or `null` if the page has none. */
+function boardIdOnPage(document: Document): string | null {
+  const id = document.querySelector<HTMLElement>("[data-board-id]")?.dataset.boardId ?? "";
+  return /^\d+$/.test(id) ? id : null;
 }
 
 // URL filters -----------------------------------------------------------------

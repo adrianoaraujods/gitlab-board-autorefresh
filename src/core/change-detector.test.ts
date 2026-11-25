@@ -45,7 +45,23 @@ describe("Change Detector", () => {
       });
     });
 
-    it("can't tell which board is shown when the URL has no board id", () => {
+    it("reads the board GitLab picked from the board app root when the URL has no board id", () => {
+      // `/-/boards` shows the default board without redirecting; only the page says which one.
+      const project = "https://gitlab.example/group/project/-/boards?label_name[]=Doing";
+      const projectRoot = '<div class="js-issuable-board-app" data-board-id="12" data-parent="project" data-full-path="group/project"></div>';
+      expect(readBoardContext(project, page(project, 'data-project-full-path="group/project"', projectRoot))).toEqual({
+        board: { fullPath: "group/project", boardId: "12", parent: "project", filters: { labelName: ["Doing"] } },
+        graphqlUrl: "https://gitlab.example/api/graphql",
+      });
+      const group = "https://example.com/gitlab/groups/group/-/boards";
+      const groupRoot = '<div class="js-issuable-board-app" data-board-id="5" data-parent="group" data-full-path="group"></div>';
+      expect(readBoardContext(group, page(group, 'data-group-full-path="group"', groupRoot))).toEqual({
+        board: { fullPath: "group", boardId: "5", parent: "group" },
+        graphqlUrl: "https://example.com/gitlab/api/graphql",
+      });
+    });
+
+    it("can't tell which board is shown when neither the URL nor the page has a board id", () => {
       const url = "https://gitlab.example/group/project/-/boards";
       expect(readBoardContext(url, page(url))).toBeNull();
     });
@@ -546,8 +562,9 @@ describe("Change Detector", () => {
 });
 
 /** A minimal board page whose body carries `bodyAttributes`. */
-function page(url: string, bodyAttributes = ""): Document {
-  return new JSDOM(`<!doctype html><body data-page="projects:boards:show" ${bodyAttributes}></body>`, { url }).window.document;
+function page(url: string, bodyAttributes = "", content = ""): Document {
+  return new JSDOM(`<!doctype html><body data-page="projects:boards:show" ${bodyAttributes}>${content}</body>`, { url }).window
+    .document;
 }
 
 /** The project board fixture with `edit` applied to its lists (in board order). */
