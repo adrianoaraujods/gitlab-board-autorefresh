@@ -27,8 +27,9 @@
  * In smart detection (#11) the scheduler asks for `check-changes` first: one
  * POST to the instance's `/api/graphql` with the session cookie and the
  * page's CSRF token, built and compared by the Change Detector. A failed
- * request is reported as such; a board URL without a board id can't be
- * fingerprinted and answers `invalid` (the scheduler then reloads like v1).
+ * request is reported as such. A bare `/-/boards` URL has no board id: it is
+ * read from the page's server-rendered HTML, fetched once per page; if that
+ * can't say either, the check answers `invalid` (the scheduler then reloads like v1).
  *
  * Own edits (#15): the current user id is read from the page, and card
  * drag-end/drop events on the board are noted as "a local drag finished", both
@@ -42,6 +43,7 @@ import {
   readBoardContext,
   readCurrentUserId,
   type BoardFingerprint,
+  type BoardPageContext,
 } from "../core/change-detector";
 import {
   initialSchedulerState,
@@ -195,11 +197,46 @@ async function checkReachability(): Promise<boolean> {
 /** How long the change-detection request may take before it counts as failed. */
 const CHECK_CHANGES_TIMEOUT_MS = 30_000;
 
+/** The board context read from the server-rendered page, for the URL it was read at. */
+let serverRenderedContext: { url: string; context: BoardPageContext } | undefined;
+
+/**
+ * The board this page shows. From the URL or the live page when they say; a
+ * bare `/-/boards` shows the default board, whose id GitLab only renders on the
+ * board app root, and the Vue app replaces that element when it mounts. Then the
+ * page's server-rendered HTML is fetched once and read instead. A redirect means
+ * the server would now show another board (a recently visited one), so it
+ * can't say which board this tab shows. `"unreachable"`: the request failed.
+ */
+async function boardContext(): Promise<BoardPageContext | null | "unreachable"> {
+  const url = location.href;
+  const live = readBoardContext(url, document);
+  if (live !== null) return live;
+  if (serverRenderedContext?.url === url) return serverRenderedContext.context;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: AbortSignal.timeout(CHECK_CHANGES_TIMEOUT_MS),
+    });
+  } catch {
+    return "unreachable";
+  }
+  if (!response.ok || response.redirected) return null;
+  const html = await response.text().catch(() => null);
+  if (html === null) return "unreachable";
+  const context = readBoardContext(url, new DOMParser().parseFromString(html, "text/html"));
+  if (context !== null) serverRenderedContext = { url, context };
+  return context;
+}
+
 /** Fetches the board's fingerprint and compares it with `baseline` (Change Detector). */
 async function checkChanges(baseline: BoardFingerprint | null): Promise<SchedulerEvent> {
-  const page = readBoardContext(location.href, document);
+  const page = await boardContext();
+  if (page === "unreachable") return { type: "changes-checked", reachable: false };
   if (page === null) {
-    return { type: "changes-checked", reachable: true, detection: { kind: "invalid", problem: "no board id in the URL" } };
+    return { type: "changes-checked", reachable: true, detection: { kind: "invalid", problem: "can't tell which board is shown" } };
   }
   const { query, variables } = buildFingerprintRequest(page.board);
   // A drag of mine is only used up once the baseline advances to a result that took it into account.
