@@ -1,0 +1,41 @@
+{
+  "data": {
+    "group": {
+      "board": {
+        "id": "gid://gitlab/Board/7",
+        "lists": {
+          "nodes": [
+            {
+              "id": "gid://gitlab/List/31",
+              "title": "Open",
+              "listType": "backlog",
+              "position": null,
+              "collapsed": false,
+              "label": null,
+              "issuesCount": 1,
+              "issues": {
+                "nodes": [
+                  { "id": "gid://gitlab/Issue/41", "updatedAt": "2026-11-22T12:00:00Z", "updatedBy": { "id": "gid://gitlab/User/5" } }
+                ]
+              }
+            },
+            {
+              "id": "gid://gitlab/List/32",
+              "title": "Workflow::Ready",
+              "listType": "label",
+              "position": 0,
+              "collapsed": false,
+              "label": { "id": "gid://gitlab/GroupLabel/51", "title": "Workflow::Ready", "color": "#6699cc" },
+              "issuesCount": 1,
+              "issues": {
+                "nodes": [
+                  { "id": "gid://gitlab/Issue/42", "updatedAt": "2026-11-22T13:10:00Z", "updatedBy": { "id": "gid://gitlab/User/6" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

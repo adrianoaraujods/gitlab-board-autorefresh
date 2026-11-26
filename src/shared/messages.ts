@@ -7,13 +7,22 @@ export type ContentToBackgroundMessage =
       type: "set-badge";
       /** `null` clears the badge (not a board page). */
       badge: BadgeState | null;
+      /** Cards changed, shown as the badge text of the `updates` badge. */
+      count?: number;
     }
   /** Asks whether the sender's tab is the active tab of its window; answered with `TabActivityResponse`. */
   | { type: "get-tab-activity" }
   /** Asks whether the sender's tab is paused; answered with `PauseReply`. */
   | { type: "get-pause" }
   /** Asks whether the sender tab's browser window is the focused Chrome window; answered with `WindowFocusReply`. */
-  | { type: "get-window-focus" };
+  | { type: "get-window-focus" }
+  /** Asks the worker to refetch the sender tab's board data in place; answered with `RefetchReply`. */
+  | { type: "refetch-board" };
+
+export interface RefetchReply {
+  /** Whether the board's data layer was found and refetched. */
+  ok: boolean;
+}
 
 export interface TabActivityResponse {
   active: boolean;
@@ -67,6 +76,7 @@ interface BackgroundReplies {
   "get-tab-activity": TabActivityResponse;
   "get-pause": PauseReply;
   "get-window-focus": WindowFocusReply;
+  "refetch-board": RefetchReply;
   "get-tab-pause": PauseReply;
   "set-tab-pause": PauseReply;
 }
@@ -84,10 +94,18 @@ export type ContentReply<M extends ToContentMessage> = ContentReplies[M["type"]]
 
 /**
  * Sends to the background worker and resolves with the reply for that message
- * type, or `undefined` if nothing answered.
+ * type, or `undefined` if nothing answered. A content script orphaned by an
+ * extension reload or update has no worker to talk to: it gets `undefined`
+ * too, instead of an "Extension context invalidated" error.
  */
-export function sendToBackground<M extends BackgroundMessage>(message: M): Promise<BackgroundReply<M> | undefined> {
-  return chrome.runtime.sendMessage(message);
+export async function sendToBackground<M extends BackgroundMessage>(message: M): Promise<BackgroundReply<M> | undefined> {
+  if (chrome.runtime?.id === undefined) return undefined;
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("Extension context invalidated")) return undefined;
+    throw error;
+  }
 }
 
 /**

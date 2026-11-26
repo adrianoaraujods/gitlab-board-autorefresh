@@ -26,8 +26,12 @@ This is an independent, open-source extension. It is not made, endorsed or suppo
 How it works:
 
 - While the board's window has focus, the board is never reloaded.
-- When you click away (into another window or app), the board reloads every refresh interval
-  (30 seconds by default, minimum 10) until you come back.
+- When you click away (into another window or app), the board is checked for changes every refresh
+  interval (30 seconds by default, minimum 10) with one small request, and reloads only when
+  something on it changed, until you come back.
+- While the board is focused it keeps being checked; changes by others show as a blue badge with the number of
+  changed cards and are applied when you leave the window. Your own edits don't trigger a reload.
+- In smart mode the board is also fully reloaded every 15 minutes (configurable, 0 = off) as a safety net.
 - A reload is skipped while you are in the middle of something: the issue sidebar is open, a comment,
   title or description has unsaved text, a modal or dropdown is open, or a card is being dragged.
   It tries again on the next interval.
@@ -39,6 +43,7 @@ How it works:
 The toolbar badge shows the state at a glance:
 
 - Green: auto-refresh is active (window unfocused).
+- Blue: changes by others are waiting while the board is focused.
 - Grey: idle (window focused, or the tab is paused). Pages that are not boards get no badge.
 - Yellow: a reload was skipped because you are editing.
 - Red: you were signed out, or reloads are failing (retried with backoff up to 5 minutes).
@@ -53,6 +58,10 @@ Options:
 - Which tabs refresh: "Current tab" (default) refreshes only the visible board tab in each window;
   "All tabs" also refreshes background board tabs.
 - Refresh interval in seconds.
+- Detection: "Smart" (default) reloads only when the board changed; "Always reload" reloads every
+  interval.
+- Refresh after my own edits (off by default), safety-net reload interval, and an experimental "Update in
+  place" option that refreshes the board's data without reloading the page.
 
 Privacy: no data is collected or sent anywhere. Settings are stored with Chrome's sync storage.
 
@@ -76,13 +85,14 @@ up to date, and skips reloads while the user is editing on the board.
 
 ### `storage`
 
-Stores the user's settings (the list of GitLab domains, the refresh mode and the refresh interval) in
+Stores the user's settings (the list of GitLab domains, the refresh mode, the refresh interval and the detection mode) in
 `chrome.storage.sync`, and the per-tab "Pause this tab" state in `chrome.storage.session` for the life of
 the tab. Nothing else is stored.
 
 ### `scripting`
 
-Registers the extension's content script dynamically, only on the GitLab origins the user has added and
+Also used, only when the experimental "Update in place" option is on, to run a refetch of the board's data inside
+the board page the user already has open. Registers the extension's content script dynamically, only on the GitLab origins the user has added and
 granted on the options page, and unregisters it when the user removes a domain or revokes access. No code
 is injected anywhere else, and all code ships in the package.
 
@@ -104,9 +114,10 @@ No. All JavaScript is bundled in the package; the extension loads no remote code
 
 ### Data usage
 
-Tick nothing: the extension does not collect or transmit any user data. Its only network requests are
-reloads of the board page the user already has open (plus a same-origin `HEAD` request to that page
-first, to check the server is reachable), made with the user's existing GitLab session.
+Tick nothing: the extension does not collect or transmit any user data. Its only network requests are a
+small same-origin GraphQL request each interval to check whether the open board changed, reloads of
+the board page the user already has open (plus a same-origin `HEAD` request to that page first, to
+check the server is reachable), all made with the user's existing GitLab session.
 
 Certify the three Limited Use disclosures.
 

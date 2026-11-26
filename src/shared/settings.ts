@@ -1,6 +1,14 @@
 /** Settings stored in chrome.storage.sync, with defaults in DEFAULT_SETTINGS. */
 import { DEFAULT_INTERVAL_SECONDS, normalizeIntervalSeconds } from "../core/refresh-interval";
-import { normalizeTabMode, type SchedulerSettings, type TabMode } from "../core/refresh-scheduler";
+import {
+  DEFAULT_SAFETY_NET_MINUTES,
+  normalizeDetection,
+  normalizeSafetyNetMinutes,
+  normalizeTabMode,
+  type Detection,
+  type SchedulerSettings,
+  type TabMode,
+} from "../core/refresh-scheduler";
 
 export interface Settings {
   /** Configured origins, e.g. "https://gitlab.com". */
@@ -9,12 +17,24 @@ export interface Settings {
   intervalSeconds: number;
   /** Which board tabs refresh (default "current-tab"). */
   mode: TabMode;
+  /** Whether a due tick reloads only when the board changed ("smart", the default) or always (v1). */
+  detection: Detection;
+  /** Experimental: apply detected changes through the board's data layer instead of reloading (default off). */
+  updateInPlace: boolean;
+  /** Whether the user's own edits also reload the board (default false: they are already on screen). */
+  refreshAfterOwnEdits: boolean;
+  /** Minutes between safety-net full reloads in smart mode (default 15, 0 = off). */
+  safetyNetMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   domains: ["https://gitlab.com"],
   intervalSeconds: DEFAULT_INTERVAL_SECONDS,
   mode: "current-tab",
+  detection: "smart",
+  updateInPlace: false,
+  refreshAfterOwnEdits: false,
+  safetyNetMinutes: DEFAULT_SAFETY_NET_MINUTES,
 });
 
 export async function loadSettings(): Promise<Settings> {
@@ -24,12 +44,21 @@ export async function loadSettings(): Promise<Settings> {
     ...settings,
     intervalSeconds: normalizeIntervalSeconds(settings.intervalSeconds),
     mode: normalizeTabMode(settings.mode),
+    detection: normalizeDetection(settings.detection),
+    updateInPlace: settings.updateInPlace === true,
+    refreshAfterOwnEdits: settings.refreshAfterOwnEdits === true,
+    safetyNetMinutes: normalizeSafetyNetMinutes(settings.safetyNetMinutes),
   };
 }
 
 /** The Refresh Scheduler's view of the settings. */
-export function toSchedulerSettings({ intervalSeconds, mode }: Pick<Settings, "intervalSeconds" | "mode">): SchedulerSettings {
-  return { intervalMs: intervalSeconds * 1000, mode };
+export function toSchedulerSettings({
+  intervalSeconds,
+  mode,
+  detection,
+  safetyNetMinutes,
+}: Pick<Settings, "intervalSeconds" | "mode" | "detection" | "safetyNetMinutes">): SchedulerSettings {
+  return { intervalMs: intervalSeconds * 1000, mode, detection, safetyNetMinutes };
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<void> {

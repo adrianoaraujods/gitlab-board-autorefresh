@@ -28,9 +28,9 @@
 
       <section aria-labelledby="interval-heading">
         <h2 id="interval-heading">Refresh interval</h2>
-        <p class="hint">How often an unfocused board reloads. Minimum 10 seconds.</p>
+        <p class="hint">How often an unfocused board checks for changes (or reloads, with Always reload). Minimum 10 seconds.</p>
         <form id="interval-form" novalidate>
-          <label for="interval-input">Seconds between reloads</label>
+          <label for="interval-input">Seconds between checks</label>
           <div class="row">
             <input id="interval-input" type="number" min="10" step="1" inputmode="numeric" />
             <button type="submit">Save</button>
@@ -54,6 +54,58 @@
           </label>
         </fieldset>
         <p id="mode-error" class="error" role="alert" hidden></p>
+      </section>
+
+      <section aria-labelledby="detection-heading">
+        <h2 id="detection-heading">Detection</h2>
+        <fieldset id="detection-fieldset">
+          <legend class="hint">What an unfocused board does when the interval is up.</legend>
+          <label class="choice">
+            <input type="radio" name="detection" value="smart" />
+            <span>
+              <strong>Smart</strong>: checks for changes with one small request and reloads only when the board
+              changed.
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="detection" value="always-reload" />
+            <span><strong>Always reload</strong>: reloads every interval, changed or not.</span>
+          </label>
+        </fieldset>
+        <p id="detection-error" class="error" role="alert" hidden></p>
+        <label class="choice">
+          <input type="checkbox" id="update-in-place-input" />
+          <span>
+            <strong>Update in place (experimental)</strong>: apply detected changes through the board's own data
+            layer, with no reload and no flash. Falls back to a normal reload if that isn't available. Needs Smart
+            detection.
+          </span>
+        </label>
+        <p id="update-in-place-error" class="error" role="alert" hidden></p>
+      </section>
+
+      <section aria-labelledby="own-edits-heading">
+        <h2 id="own-edits-heading">Own edits</h2>
+        <label class="choice">
+          <input type="checkbox" id="own-edits-input" />
+          <span>
+            <strong>Refresh after my own edits</strong>: reload after any change, including ones you made. Off by
+            default, since your own edits are already on your screen. While off, a change made by someone else
+            while you were editing could be missed until the next change.
+          </span>
+        </label>
+        <p id="own-edits-error" class="error" role="alert" hidden></p>
+      </section>
+
+      <section aria-labelledby="safety-net-heading">
+        <h2 id="safety-net-heading">Safety-net reload</h2>
+        <p class="hint">
+          With Smart detection, a full reload this often catches anything detection misses (such as a renamed label
+          colour). 0 turns it off.
+        </p>
+        <label for="safety-net-input">Minutes between full reloads</label>
+        <input id="safety-net-input" type="number" min="0" step="1" inputmode="numeric" />
+        <p id="safety-net-error" class="error" role="alert" hidden></p>
       </section>
     </main>
     <script src="options.js"></script>
